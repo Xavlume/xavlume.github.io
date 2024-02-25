@@ -1,11 +1,6 @@
 let is_redirect = false
 let click_count = 0;
 
-function getRandomInt(min, max) {
-    max += 1;
-    return Math.floor(Math.random() * (max-min)) + min;
-  }
-
 // From https://stackoverflow.com/a/11381730
 function mobileAndTabletCheck() {
   let check = false;
@@ -19,7 +14,7 @@ function get_random_imgur_link(){
   let characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz01234567890123456789'; // Chars to randomize
   let charactersLength = characters.length;
 
-  for ( let i = 0; i < getRandomInt(5,8); i++ ) {
+  for ( let i = 0; i < 5; i++ ) {
     result += characters.charAt(Math.floor(Math.random() * charactersLength));
   }
 
@@ -28,13 +23,7 @@ function get_random_imgur_link(){
 
 
 async function check_if_redirect(file) {
-  let myObject = await fetch(file, { 
-    headers: {
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Headers': 'Content-Type,Authorization,Access-Control-Allow-Origin',
-      'Access-Control-Allow-Methods': 'GET,POST,PUT,DELETE'
-    }
-  });
+  let myObject = await fetch(file);
   is_redirect = myObject.redirected;
 }
 
