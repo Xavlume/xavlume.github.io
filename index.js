@@ -43,6 +43,13 @@ async function display_random_imgur_image() {
   }
 }
 
+function hide_random_imgur_image() {
+
+  document.getElementById("the-img").src = "";
+  document.getElementById("the-url").innerText = "";
+  document.getElementById("the-url").href = "";
+
+}
 
 // Space or Enter on desktop or laptop and click on mobile
 if (mobileAndTabletCheck()) 
@@ -62,6 +69,9 @@ else
       }
 
       display_random_imgur_image();
+    }
+    if (event.code === 'Escape' || event.code === 'Backspace'){
+      hide_random_imgur_image();
     }
   })
 }
