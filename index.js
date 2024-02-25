@@ -28,7 +28,11 @@ function get_random_imgur_link(){
 
 
 async function check_if_redirect(file) {
-  let myObject = await fetch(file);
+  let myObject = await fetch(file, { 
+    headers: {
+      'Access-Control-Allow-Origin': '*'
+    }
+  });
   is_redirect = myObject.redirected;
 }
 
