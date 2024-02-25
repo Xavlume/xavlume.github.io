@@ -60,7 +60,7 @@ if (mobileAndTabletCheck())
 
 else 
 {
-  document.getElementById("hint").innerText = "(Press the Spacebar or the Enter key to get a new image)";
+  document.getElementById("hint").innerText = "Press the Spacebar or the Enter key to get a new image and press the Escape or the Backspace key to hide the image";
   document.addEventListener('keyup', event => {
     if (event.code === 'Space' || event.code === 'Enter') {
       click_count += 1;
