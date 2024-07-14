@@ -17,14 +17,36 @@ function get_random_imgur_link(){
   for ( let i = 0; i < 5; i++ ) {
     result += characters.charAt(Math.floor(Math.random() * charactersLength));
   }
-
+  
   return result + ".png"; // https://i.imgur.com/ + the random chars + .png
 }
-
 
 async function check_if_redirect(file) {
   let myObject = await fetch(file);
   is_redirect = myObject.redirected;
+}
+
+async function resize_Image(link) {
+  let img = new Image();
+  img.onload = function() {
+    let maxWidth = Math.floor(Math.max(document.documentElement.clientWidth || 0, window.innerWidth || 0) / 2);
+    let maxHeigth = Math.floor(Math.max(document.documentElement.clientHeight || 0, window.innerHeight || 0) / 2);
+    if (this.width > maxWidth || this.height > maxHeigth) {
+      if (this.width > this.height){
+        document.getElementById("the-img").style.maxWidth = "50%";
+        document.getElementById("the-img").style.maxHeight= "100%";
+      }
+      else {
+        document.getElementById("the-img").style.maxWidth = "100%";
+        document.getElementById("the-img").style.maxHeight= "50%";
+      }
+    }
+    else {
+      document.getElementById("the-img").style.maxWidth = "100%";
+      document.getElementById("the-img").style.maxHeight= "100%";
+    }
+  }
+  img.src = link;
 }
 
 async function display_random_imgur_image() {
@@ -40,6 +62,8 @@ async function display_random_imgur_image() {
     document.getElementById("the-url").innerText = the_link;
     document.getElementById("the-url").href = the_link;
     console.log(the_link);
+
+    await resize_Image(the_link);
   }
 }
 
@@ -57,7 +81,6 @@ if (mobileAndTabletCheck())
   document.getElementById("hint").innerText = "(Press on the screen to get a new image)";
   document.onclick = display_random_imgur_image;
 }
-
 else 
 {
   document.getElementById("hint").innerText = "Press the Spacebar or the Enter key to get a new image and press the Escape or the Backspace key to hide the image";
