@@ -1066,22 +1066,33 @@ function displayedRows() {
   return rows;
 }
 
+// Two-tone split chips: a saturated color slug (allocation/ratio) + white label.
+const CHIP_META = {
+  "VEQT": ["chip-veqt", "100/0", "VEQT"],
+  "VEQT1.5": ["chip-veqt15", "x1.5", "VEQT 1.5"],
+  "VEQT2": ["chip-veqt2", "x2.0", "VEQT 2.0"],
+  "VGRO": ["chip-vgro", "80/20", "VGRO"],
+  "VBAL": ["chip-vbal", "60/40", "VBAL"],
+  "CASH": ["chip-cash", "HISA", "CASH"],
+  "DECLINING": ["chip-glide", "\u2193", "DECLINING"],
+  "RISING": ["chip-glide", "\u2191", "RISING"],
+};
+
 function renderBadge(str) {
   if (!str) return "";
   const isCash = str.includes("+CASH");
   const base = str.replace("+CASH", "");
-  let cls = "badge-veqt";
-  if (base === "VGRO") cls = "badge-vgro";
-  else if (base === "VBAL") cls = "badge-vbal";
-  else if (base === "DECLINING" || base === "RISING") cls = "badge-glide";
-  let html = '<span class="badge ' + cls + '">' + escapeHtml(base) + "</span>";
-  if (isCash) html += ' <span class="badge badge-cash">+CASH</span>';
+  const meta = CHIP_META[base] || ["chip-veqt", "", base];
+  let html = '<span class="badge"><span class="badge-chip ' + meta[0] + '">' + meta[1] + '</span><span class="badge-text">' + escapeHtml(meta[2]) + "</span></span>";
+  if (isCash) html += ' <span class="badge"><span class="badge-chip chip-cash">HISA</span><span class="badge-text">+CASH</span></span>';
   return html;
 }
 
 function renderHouseBadge(house) {
-  if (house === "HOUSE_NONE") return '<span class="badge badge-house-rent">Renter (' + money(MODEL.inputs.monthlyMarketRent) + ')</span>';
-  return '<span class="badge badge-house-buy">Buyer (' + money(MODEL.inputs.propertyValue) + ')</span>';
+  if (house === "HOUSE_NONE") return '<span class="badge"><span class="badge-chip chip-rent">RE</span><span class="badge-text">Renter</span></span>';
+  const fund = house.replace("HOUSE_", "");
+  const meta = CHIP_META[fund] || ["chip-veqt", "", fund];
+  return '<span class="badge"><span class="badge-chip ' + meta[0] + '">' + meta[1] + '</span><span class="badge-text">Buyer (' + escapeHtml(fund) + ")</span></span>";
 }
 
 function renderTable(selectTop) {
@@ -1093,7 +1104,7 @@ function renderTable(selectTop) {
 
   if (!rows.length) {
     body.innerHTML = '<tr><td colspan="12" style="text-align:center; padding:32px; color:var(--text-muted); font-family:var(--font-mono)">' +
-      (state.results ? "No strategies match your criteria." : "No results yet — open Settings and press Re-Simulate.") + "</td></tr>";
+      (state.results ? "No strategies match your criteria." : "No results yet — open Settings and press Simulate.") + "</td></tr>";
     if (activeStrategy) drawDistributionChart();
     return;
   }
@@ -1103,9 +1114,9 @@ function renderTable(selectTop) {
     return "<tr" + selected + " data-name=\"" + escapeHtml(row.name) + "\">" +
       '<td class="mono" style="font-weight:700; color:var(--brand-navy)">' + (index + 1) + "</td>" +
       "<td>" + renderHouseBadge(row.house) + "</td>" +
-      "<td>" + renderBadge(row.parts[2]) + "</td>" +
-      "<td>" + renderBadge(row.parts[3]) + "</td>" +
-      "<td>" + renderBadge(row.parts[4]) + "</td>" +
+      '<td><div class="badge-group">' + renderBadge(row.parts[2]) + "</div></td>" +
+      '<td><div class="badge-group">' + renderBadge(row.parts[3]) + "</div></td>" +
+      '<td><div class="badge-group">' + renderBadge(row.parts[4]) + "</div></td>" +
       '<td class="right mono" style="color:var(--text-muted)">' + (row.buyAge == null ? "—" : row.buyAge.toFixed(1)) + "</td>" +
       '<td class="right mono" style="color:var(--text-muted)">' + (row.mortgage == null ? "—" : money(row.mortgage)) + "</td>" +
       '<td class="right mono" style="font-weight:700; color:var(--brand-green)">' + money(row.ce) + "/mo</td>" +
@@ -1296,6 +1307,8 @@ async function runSimulation() {
     logWarn("runSimulation ignored: a run is already active.");
     return;
   }
+  // The first click consumes the attention effect permanently.
+  byId("btn-run-sim").classList.remove("btn-attract");
   let settings;
   try {
     settings = {simulations: simulationCountFromSlider(), model: readModelInputs()};
@@ -1308,6 +1321,7 @@ async function runSimulation() {
   const run = {cancelled: false};
   state.activeRun = run;
   setBusy(true);
+  byId("btn-run-sim").textContent = "Simulating...";
   setStatus("WebGPU run active: " + state.adapterText, false);
   setText("run-message", "Generating paths and solving on GPU...");
   setProgress(0, 100, "Allocating buffers...");
@@ -1348,6 +1362,7 @@ async function runSimulation() {
     clearTimeout(watchdog);
     state.activeRun = null;
     setBusy(false);
+    byId("btn-run-sim").textContent = "Simulate";
   }
 }
 
@@ -1489,7 +1504,7 @@ STATUS_STRIP = """
   <span>Adapter: <b id="adapter-meta" style="color:var(--text-primary)">pending</b></span>
   <span>Paths: <b id="completed-meta" style="color:var(--text-primary)">no run yet</b></span>
   <span>Timing: <b id="timing-meta" style="color:var(--text-primary)">—</b></span>
-  <span style="flex:1; text-align:right; color:var(--text-secondary)" id="run-message">Open Settings and press “Re-Simulate” to run the engine.</span>
+  <span style="flex:1; text-align:right; color:var(--text-secondary)" id="run-message">Open Settings and press “Simulate” to run the engine.</span>
 </div>
 <div class="progress" style="height:4px; background:var(--border-subtle); border-radius:99px; overflow:hidden; margin:0">
   <div id="progress-fill" style="height:100%; width:0; background:var(--brand-green); transition:width .12s ease"></div>
@@ -1515,7 +1530,11 @@ def _inject_status_strip(html: str, payload: dict) -> str:
         ".cma-toggle-row{display:flex;align-items:center;padding:2px 0}"
         ".cma-toggle{display:flex;align-items:center;gap:8px;cursor:pointer;font-size:12px;font-weight:600;color:var(--text-primary)}"
         '.cma-toggle input[type="checkbox"]{width:15px;height:15px;accent-color:var(--brand-navy);cursor:pointer}'
-        ".cma-toggle-hint{color:var(--text-muted);font-weight:500}</style></head>",
+        ".cma-toggle-hint{color:var(--text-muted);font-weight:500}"
+        ".btn-attract{animation:horizon-glow 1.9s ease-in-out infinite;position:relative}"
+        ".btn-attract::after{content:\"\";position:absolute;inset:-5px;border-radius:11px;border:2px solid var(--brand-green);opacity:0;animation:horizon-ring 1.9s ease-out infinite;pointer-events:none}"
+        "@keyframes horizon-glow{0%,100%{box-shadow:0 0 0 0 rgba(5,150,105,.40)}50%{box-shadow:0 0 16px 3px rgba(5,150,105,.55)}}"
+        "@keyframes horizon-ring{0%{opacity:.9;transform:scale(1)}70%{opacity:0;transform:scale(1.07)}100%{opacity:0}}</style></head>",
         1,
     )
     return html

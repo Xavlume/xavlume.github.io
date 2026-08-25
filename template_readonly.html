@@ -247,18 +247,64 @@ tbody tr.selected-row { background: var(--brand-green-bg); border-left: 3px soli
 td { padding: 10px 12px; vertical-align: middle; white-space: nowrap; }
 
 .mono { font-family: var(--font-mono); }
-.badge {
-  display: inline-flex; align-items: center; gap: 3px;
-  font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 4px;
-  font-family: var(--font-mono); border: 1px solid transparent;
+:root {
+  /* Saturated semantic colors for the two-tone split chips */
+  --c-veqt: #1e3a8a;    /* 100/0 Deep Midnight Navy */
+  --c-vgro: #2563eb;    /* 80/20 Royal Blue */
+  --c-vbal: #0d9488;    /* 60/40 Balanced Teal */
+  --c-veqt15: #ea580c;  /* x1.5 Warm Orange */
+  --c-veqt2: #dc2626;   /* x2.0 Crimson Red */
+  --c-cash: #059669;    /* HISA Emerald Green */
+  --c-glide: #0284c7;   /* Sky Steel Blue (Rising & Declining) */
+  --c-rent: #64748b;    /* Renter Slate Grey */
 }
-.badge-veqt { background: #f5f3ff; color: #6d28d9; border-color: #ddd6fe; }
-.badge-vgro { background: #f0f9ff; color: #0369a1; border-color: #bae6fd; }
-.badge-vbal { background: #ecfdf5; color: #047857; border-color: #a7f3d0; }
-.badge-glide { background: #fffbeb; color: #b45309; border-color: #fde68a; }
-.badge-cash { background: #dcfce7; color: #15803d; border-color: #bbf7d0; font-weight: 800; }
-.badge-house-buy { background: #eff6ff; color: #1d4ed8; border-color: #bfdbfe; }
-.badge-house-rent { background: #f1f5f9; color: #334155; border-color: #cbd5e1; }
+
+/* Two-tone split chip: saturated color slug + white label */
+.badge {
+  display: inline-flex;
+  align-items: stretch;   /* chip stretches the full badge height */
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  border-radius: 5px;
+  overflow: hidden;       /* seamless edge-to-edge clipping */
+  font-family: var(--font-mono);
+  vertical-align: middle;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
+  line-height: 1;
+}
+.badge-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 5px;
+  min-width: 22px;
+  color: #ffffff;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  user-select: none;
+  flex-shrink: 0;
+}
+.badge-text {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 7px;
+  color: #0f172a;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.badge-group { display: inline-flex; align-items: center; gap: 5px; }
+
+/* Category chip colors */
+.chip-veqt   { background: var(--c-veqt); }
+.chip-vgro   { background: var(--c-vgro); }
+.chip-vbal   { background: var(--c-vbal); }
+.chip-veqt15 { background: var(--c-veqt15); }
+.chip-veqt2  { background: var(--c-veqt2); }
+.chip-cash   { background: var(--c-cash); }
+.chip-glide  { background: var(--c-glide); }
+.chip-rent   { background: var(--c-rent); }
 
 /* SIDE SETTINGS WINDOW */
 .settings-panel {
@@ -819,10 +865,10 @@ td { padding: 10px 12px; vertical-align: middle; white-space: nowrap; }
       </div>
     </div>
 
-    <!-- Settings Window Actions: Reset Defaults & Re-Simulate -->
+    <!-- Settings Window Actions: Reset Defaults & Simulate -->
     <div class="settings-footer">
       <button class="btn btn-secondary" style="flex:1" id="btn-reset-defaults">Reset Defaults</button>
-      <button class="btn btn-primary" style="flex:1.5" id="btn-run-sim">Re-Simulate</button>
+      <button class="btn btn-primary btn-attract" style="flex:1.5" id="btn-run-sim">Simulate</button>
     </div>
   </aside>
 
@@ -853,23 +899,32 @@ function formatCurrency(num) {
   return "$" + Math.round(num).toLocaleString("en-US");
 }
 
+const CHIP_META = {
+  "VEQT": ["chip-veqt", "100/0", "VEQT"],
+  "VEQT1.5": ["chip-veqt15", "x1.5", "VEQT 1.5"],
+  "VEQT2": ["chip-veqt2", "x2.0", "VEQT 2.0"],
+  "VGRO": ["chip-vgro", "80/20", "VGRO"],
+  "VBAL": ["chip-vbal", "60/40", "VBAL"],
+  "CASH": ["chip-cash", "HISA", "CASH"],
+  "DECLINING": ["chip-glide", "↓", "DECLINING"],
+  "RISING": ["chip-glide", "↑", "RISING"],
+};
+
 function renderBadge(str) {
   if (!str) return "";
   const isCash = str.includes("+CASH");
   const base = str.replace("+CASH", "");
-  let cls = "badge-veqt";
-  if (base === "VGRO") cls = "badge-vgro";
-  else if (base === "VBAL") cls = "badge-vbal";
-  else if (base === "DECLINING" || base === "RISING") cls = "badge-glide";
-  
-  let html = `<span class="badge ${cls}">${base}</span>`;
-  if (isCash) html += ` <span class="badge badge-cash">+CASH</span>`;
+  const meta = CHIP_META[base] || ["chip-veqt", "", base];
+  let html = `<span class="badge"><span class="badge-chip ${meta[0]}">${meta[1]}</span><span class="badge-text">${meta[2]}</span></span>`;
+  if (isCash) html += ` <span class="badge"><span class="badge-chip chip-cash">HISA</span><span class="badge-text">+CASH</span></span>`;
   return html;
 }
 
 function renderHouseBadge(house) {
-  if (house === "HOUSE_NONE") return `<span class="badge badge-house-rent">Renter ($2.5k)</span>`;
-  return `<span class="badge badge-house-buy">Buyer ($500k)</span>`;
+  if (house === "HOUSE_NONE") return `<span class="badge"><span class="badge-chip chip-rent">RE</span><span class="badge-text">Renter</span></span>`;
+  const fund = house.replace("HOUSE_", "");
+  const meta = CHIP_META[fund] || ["chip-veqt", "", fund];
+  return `<span class="badge"><span class="badge-chip ${meta[0]}">${meta[1]}</span><span class="badge-text">Buyer (${meta[2]})</span></span>`;
 }
 
 // Render Leaderboard

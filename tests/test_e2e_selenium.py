@@ -155,6 +155,11 @@ def main() -> int:
             "return byId('app-container').classList.contains('settings-open');"
         )
         check("settings window opens by default", settings_open)
+        btn_state = driver.execute_script(
+            "return {label: byId('btn-run-sim').textContent.trim(), attract: byId('btn-run-sim').classList.contains('btn-attract')};"
+        )
+        check("Simulate button labelled 'Simulate'", btn_state["label"] == "Simulate", f"'{btn_state['label']}'")
+        check("Simulate button carries the attention effect before the first run", btn_state["attract"])
 
         section("RUN")
         run_simulation(driver, args.simulations)
@@ -165,6 +170,58 @@ def main() -> int:
         check("strategy count is 5,040", info["n"] == 5040, f"got {info['n']:,}")
         check("timing metadata populated", info["timing"] != "—" and "s total" in info["timing"], f"'{info['timing']}'")
         print(f"  top strategy: {info['top']}")
+        btn_after = driver.execute_script(
+            "return {label: byId('btn-run-sim').textContent.trim(), attract: byId('btn-run-sim').classList.contains('btn-attract')};"
+        )
+        check("attention effect disappears after the first run", not btn_after["attract"])
+        check("button label restored after the run", btn_after["label"] == "Simulate", f"'{btn_after['label']}'")
+
+        section("BADGE COLOR CODING")
+        badges = driver.execute_script(
+            "return {"
+            "v15: renderBadge('VEQT1.5').includes('chip-veqt15'),"
+            "v2: renderBadge('VEQT2').includes('chip-veqt2'),"
+            "glide: renderBadge('DECLINING').includes('chip-glide') && renderBadge('RISING').includes('chip-glide'),"
+            "veqt: renderBadge('VEQT').includes('chip-veqt'),"
+            "vgro: renderBadge('VGRO').includes('chip-vgro'),"
+            "vbal: renderBadge('VBAL').includes('chip-vbal'),"
+            "cash: renderBadge('VEQT+CASH').includes('chip-cash') && renderBadge('VEQT+CASH').includes('HISA')};"
+        )
+        check("1.5x leverage badge uses the orange chip (chip-veqt15)", badges["v15"])
+        check("2.0x leverage badge uses the red chip (chip-veqt2)", badges["v2"])
+        check("glidepath badges share one distinct chip (chip-glide)", badges["glide"])
+        check("cash wedge renders as HISA chip", badges["cash"])
+        house_cash = driver.execute_script("return renderHouseBadge('HOUSE_CASH');")
+        check("HOUSE_CASH buyer badge uses the same HISA emerald chip",
+              "chip-cash" in house_cash and "HISA" in house_cash and "Buyer (CASH)" in house_cash,
+              house_cash[:120])
+        colors = driver.execute_script(
+            "const chip = cls => { const el = document.createElement('span'); el.className = 'badge-chip ' + cls;"
+            " document.body.appendChild(el); const c = getComputedStyle(el).color; const b = getComputedStyle(el).backgroundColor;"
+            " el.remove(); return {c, b}; };"
+            "const badge = () => { const el = document.createElement('span'); el.className = 'badge';"
+            " el.innerHTML = '<span class=\"badge-chip chip-veqt\">100/0</span><span class=\"badge-text\">VEQT</span>';"
+            " document.body.appendChild(el); const bg = getComputedStyle(el).backgroundColor;"
+            " const tc = getComputedStyle(el.querySelector('.badge-text')).color; el.remove(); return {bg, tc}; };"
+            "return {veqt: chip('chip-veqt'), v15: chip('chip-veqt15'), v2: chip('chip-veqt2'),"
+            " vgro: chip('chip-vgro'), vbal: chip('chip-vbal'), glide: chip('chip-glide'), cash: chip('chip-cash'), badge: badge()};"
+        )
+        chips = {
+            "veqt": "rgb(30, 58, 138)",      # midnight navy
+            "v15": "rgb(234, 88, 12)",       # orange
+            "v2": "rgb(220, 38, 38)",        # crimson red
+            "vgro": "rgb(37, 99, 235)",      # royal blue
+            "vbal": "rgb(13, 148, 136)",     # teal
+            "glide": "rgb(2, 132, 199)",     # steel blue
+            "cash": "rgb(5, 150, 105)",      # emerald green
+        }
+        for key, rgb in chips.items():
+            check(f"{key} chip renders {rgb} with white text",
+                  colors[key]["b"] == rgb and colors[key]["c"] == "rgb(255, 255, 255)",
+                  f"bg {colors[key]['b']} text {colors[key]['c']}")
+        check("badge is a white box with dark charcoal label text",
+              colors["badge"]["bg"] == "rgb(255, 255, 255)" and colors["badge"]["tc"] == "rgb(15, 23, 42)",
+              f"bg {colors['badge']['bg']} text {colors['badge']['tc']}")
 
         section("UI DISTRIBUTION (all strategies)")
         dist = driver.execute_script(
@@ -293,7 +350,18 @@ def main() -> int:
         check("house dropdown keeps only renters", house_check["all"], f"{house_check['n']:,} rows")
         sel = top_selection()
         check("house dropdown auto-selects top strategy", sel["active"] == sel["top"], f"'{sel['top']}'")
+        renter_badge = driver.execute_script(
+            "return document.querySelector('#table-body tr[data-name] td:nth-child(2) .badge-text').textContent.trim();"
+        )
+        check("renter strategy shows a Renter badge", renter_badge == "Renter", f"'{renter_badge}'")
         driver.execute_script("byId('filter-house').value = 'ALL'; byId('filter-house').dispatchEvent(new Event('change'));")
+        time.sleep(0.3)
+        fund_badge = driver.execute_script(
+            "return document.querySelector('#table-body tr[data-name] td:nth-child(2) .badge-text').textContent.trim();"
+        )
+        check("buyer strategy shows the house fund",
+              fund_badge.startswith("Buyer (") and fund_badge.rstrip(")").split("(")[-1] in ("CASH", "VBAL", "VGRO", "VEQT"),
+              f"'{fund_badge}'")
 
         driver.execute_script(
             "document.querySelector('#seg-mix .seg-pill[data-mix=\"NO_CASH\"]').click();"
