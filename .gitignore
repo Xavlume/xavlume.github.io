@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+.env
+.python-version
+
+# Build & run artifacts
+*.log
+*.json.webgpu
+webgpu_retirement_comparison.json
+
+# Selenium / browser
+geckodriver.log
+chromedriver.log
+
+# Editors & OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+downloaded_prices.csv

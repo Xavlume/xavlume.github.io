@@ -1,0 +1,1174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Horizon &mdash; Wealth & Lifetime Allocation Engine</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+<style>
+:root {
+  /* Institutional Wealth Palette (Wealthsimple / RBC Private Banking) */
+  --bg-app: #f8fafc;
+  --bg-card: #ffffff;
+  --bg-subtle: #f1f5f9;
+  --bg-hover: #e2e8f0;
+  
+  --border-subtle: #e2e8f0;
+  --border-medium: #cbd5e1;
+  --border-focus: #0f172a;
+  
+  --text-primary: #0f172a;
+  --text-secondary: #475569;
+  --text-muted: #64748b;
+  --text-dim: #94a3b8;
+  
+  --brand-navy: #0f172a;
+  --brand-green: #059669;
+  --brand-green-bg: #ecfdf5;
+  --brand-green-border: #a7f3d0;
+  --brand-amber: #d97706;
+  --brand-amber-bg: #fffbeb;
+  --brand-amber-border: #fde68a;
+  --brand-blue: #0284c7;
+  
+  --shadow-sm: 0 1px 3px 0 rgba(0, 0, 0, 0.04), 0 1px 2px -1px rgba(0, 0, 0, 0.04);
+  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -2px rgba(0, 0, 0, 0.05);
+
+  --font-sans: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'JetBrains Mono', 'SF Mono', Consolas, monospace;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  background-color: var(--bg-app);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.5;
+  min-height: 100vh;
+  padding: 16px 20px 48px;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Master Layout: Side-by-Side Dynamic Grid */
+.layout-container {
+  max-width: 1720px;
+  margin: 0 auto;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px;
+  transition: grid-template-columns 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.layout-container.settings-open {
+  grid-template-columns: minmax(0, 1fr) 520px;
+}
+
+.main-column {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+
+/* Top Institutional Header */
+.header-bar {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  padding: 14px 20px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  box-shadow: var(--shadow-sm);
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.brand-group { display: flex; align-items: center; gap: 12px; }
+.brand-symbol {
+  width: 34px; height: 34px; border-radius: 8px;
+  background: var(--brand-navy); color: #ffffff;
+  display: flex; align-items: center; justify-content: center;
+  font-weight: 800; font-size: 15px; font-family: var(--font-mono);
+}
+.brand-title { font-size: 15px; font-weight: 700; color: var(--text-primary); letter-spacing: -0.02em; }
+
+.header-controls { display: flex; align-items: center; gap: 10px; }
+
+button, .btn {
+  font-family: var(--font-sans); cursor: pointer; border: 0;
+  border-radius: 8px; font-weight: 600; font-size: 12px;
+  padding: 8px 16px; transition: all 0.15s ease;
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  user-select: none;
+}
+.btn-primary {
+  background: var(--brand-navy); color: #ffffff;
+}
+.btn-primary:hover { background: #1e293b; }
+.btn-secondary {
+  background: #ffffff; color: var(--text-primary);
+  border: 1px solid var(--border-medium);
+}
+.btn-secondary:hover { background: var(--bg-subtle); }
+.btn-secondary.active {
+  background: var(--bg-subtle); border-color: var(--text-primary); font-weight: 700;
+}
+.btn-green {
+  background: var(--brand-green); color: #ffffff; border: 1px solid #047857;
+}
+.btn-green:hover { background: #047857; }
+
+/* Hero Metrics KPI Strip */
+.kpi-row {
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px;
+}
+.kpi-card {
+  background: var(--bg-card); border: 1px solid var(--border-subtle);
+  border-radius: 10px; padding: 16px 18px; box-shadow: var(--shadow-sm);
+  display: flex; flex-direction: column; gap: 6px;
+}
+.kpi-card.featured {
+  border-color: var(--brand-green-border);
+  background: linear-gradient(180deg, #ffffff 0%, var(--brand-green-bg) 100%);
+}
+.kpi-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); }
+.kpi-num { font-family: var(--font-mono); font-size: 26px; font-weight: 700; color: var(--text-primary); letter-spacing: -0.03em; }
+.kpi-num.green { color: var(--brand-green); }
+.kpi-num.amber { color: var(--brand-amber); }
+.kpi-subtext { font-size: 11px; color: var(--text-secondary); line-height: 1.45; }
+
+/* Main Workspace: Dials + S-Curve Chart */
+.workspace-grid {
+  display: grid; grid-template-columns: 400px minmax(0, 1fr); gap: 14px;
+}
+
+.card {
+  background: var(--bg-card); border: 1px solid var(--border-subtle);
+  border-radius: 10px; padding: 18px; box-shadow: var(--shadow-sm);
+  display: flex; flex-direction: column; gap: 14px;
+}
+.card-header {
+  display: flex; justify-content: space-between; align-items: center;
+  border-bottom: 1px solid var(--border-subtle); padding-bottom: 10px;
+}
+.card-title { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-primary); }
+
+.control-group { display: flex; flex-direction: column; gap: 6px; }
+.control-top { display: flex; justify-content: space-between; align-items: center; }
+.control-label { font-size: 11px; font-weight: 600; color: var(--text-secondary); white-space: nowrap; }
+.control-value { font-family: var(--font-mono); font-size: 12px; font-weight: 700; color: var(--text-primary); white-space: nowrap; text-align: right; }
+
+input[type="range"] {
+  width: 100%; height: 4px; background: var(--border-medium);
+  border-radius: 2px; outline: none; -webkit-appearance: none; cursor: pointer;
+  accent-color: var(--brand-navy);
+}
+
+/* Institutional Input Affix Group Component */
+.input-field { display: flex; flex-direction: column; gap: 4px; }
+.field-label { font-size: 11px; font-weight: 600; color: var(--text-secondary); }
+.input-affix-wrap {
+  display: flex; align-items: center; background: #ffffff;
+  border: 1px solid var(--border-medium); border-radius: 6px;
+  overflow: hidden; transition: border-color 0.15s, box-shadow 0.15s;
+  width: 100%;
+}
+.input-affix-wrap:focus-within {
+  border-color: var(--brand-navy);
+  box-shadow: 0 0 0 2px rgba(15, 23, 42, 0.08);
+}
+.affix {
+  padding: 7px 11px; font-size: 11px; font-weight: 600; color: var(--text-muted);
+  background: var(--bg-subtle); user-select: none; font-family: var(--font-mono);
+  white-space: nowrap !important;
+  flex-shrink: 0;
+  display: inline-flex; align-items: center;
+}
+.affix.prefix { border-right: 1px solid var(--border-subtle); }
+.affix.suffix { border-left: 1px solid var(--border-subtle); }
+.form-input {
+  width: 100%; min-width: 0; border: 0; outline: none; padding: 7px 10px;
+  font-size: 12px; font-family: var(--font-mono); font-weight: 600;
+  color: var(--text-primary); background: transparent;
+}
+select.form-input {
+  font-family: var(--font-sans); cursor: pointer; padding: 7px 8px;
+  border: 1px solid var(--border-medium); border-radius: 6px;
+}
+
+/* Chart Card */
+.chart-box {
+  background: var(--bg-card); border: 1px solid var(--border-subtle);
+  border-radius: 10px; padding: 18px; box-shadow: var(--shadow-sm);
+  display: flex; flex-direction: column; gap: 10px; min-width: 0;
+}
+.chart-top { display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 8px; }
+.chart-title-main { font-size: 13px; font-weight: 700; color: var(--text-primary); font-family: var(--font-mono); }
+.chart-desc { font-size: 11px; color: var(--text-secondary); }
+.canvas-wrapper { position: relative; width: 100%; height: 230px; }
+canvas { width: 100%; height: 100%; display: block; cursor: crosshair; }
+
+/* Table Leaderboard */
+.table-card {
+  background: var(--bg-card); border: 1px solid var(--border-subtle);
+  border-radius: 10px; box-shadow: var(--shadow-sm); overflow: hidden;
+  display: flex; flex-direction: column;
+}
+.table-toolbar {
+  padding: 12px 18px; border-bottom: 1px solid var(--border-subtle);
+  background: #fafafa; display: flex; justify-content: space-between;
+  align-items: center; flex-wrap: wrap; gap: 10px;
+}
+.segmented-pills {
+  display: inline-flex; background: #e2e8f0; padding: 2px; border-radius: 6px; gap: 2px;
+}
+.seg-pill {
+  background: none; border: 0; padding: 6px 14px; font-size: 11px; font-weight: 600;
+  color: var(--text-secondary); border-radius: 5px;
+}
+.seg-pill.active { background: #ffffff; color: var(--text-primary); box-shadow: var(--shadow-sm); font-weight: 700; }
+
+.table-wrap { overflow-x: auto; max-height: 540px; }
+table { width: 100%; border-collapse: collapse; text-align: left; font-size: 12px; min-width: 1140px; }
+thead { position: sticky; top: 0; z-index: 2; background: #f8fafc; border-bottom: 1px solid var(--border-medium); }
+th {
+  padding: 10px 12px; font-size: 10px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.05em; color: var(--text-muted); cursor: pointer; user-select: none;
+  font-family: var(--font-mono);
+}
+th:hover { color: var(--text-primary); }
+th.right, td.right { text-align: right; }
+tbody tr { border-bottom: 1px solid var(--border-subtle); cursor: pointer; transition: background 0.1s; }
+tbody tr:hover { background: #f8fafc; }
+tbody tr.selected-row { background: var(--brand-green-bg); border-left: 3px solid var(--brand-green); }
+td { padding: 10px 12px; vertical-align: middle; white-space: nowrap; }
+
+.mono { font-family: var(--font-mono); }
+.badge {
+  display: inline-flex; align-items: center; gap: 3px;
+  font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 4px;
+  font-family: var(--font-mono); border: 1px solid transparent;
+}
+.badge-veqt { background: #f5f3ff; color: #6d28d9; border-color: #ddd6fe; }
+.badge-vgro { background: #f0f9ff; color: #0369a1; border-color: #bae6fd; }
+.badge-vbal { background: #ecfdf5; color: #047857; border-color: #a7f3d0; }
+.badge-glide { background: #fffbeb; color: #b45309; border-color: #fde68a; }
+.badge-cash { background: #dcfce7; color: #15803d; border-color: #bbf7d0; font-weight: 800; }
+.badge-house-buy { background: #eff6ff; color: #1d4ed8; border-color: #bfdbfe; }
+.badge-house-rent { background: #f1f5f9; color: #334155; border-color: #cbd5e1; }
+
+/* SIDE SETTINGS WINDOW */
+.settings-panel {
+  display: none;
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  box-shadow: var(--shadow-md);
+  height: calc(100vh - 32px);
+  position: sticky;
+  top: 16px;
+  overflow: hidden;
+  flex-direction: column;
+}
+.layout-container.settings-open .settings-panel {
+  display: flex;
+}
+
+.panel-titlebar {
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border-subtle);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: #fafafa;
+}
+.panel-heading { font-size: 14px; font-weight: 700; color: var(--text-primary); }
+.panel-close-btn { background: none; border: 0; color: var(--text-muted); font-size: 20px; cursor: pointer; }
+.panel-close-btn:hover { color: var(--text-primary); }
+
+/* Category Nav Grid */
+.category-nav {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 4px;
+  padding: 8px 12px;
+  background: var(--bg-subtle);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.cat-btn {
+  background: transparent; border: 1px solid transparent;
+  padding: 6px 4px; font-size: 11px; font-weight: 600;
+  color: var(--text-secondary); border-radius: 6px;
+  text-align: center; white-space: normal; line-height: 1.2;
+}
+.cat-btn.active {
+  background: #ffffff; color: var(--brand-navy); font-weight: 700;
+  border-color: var(--border-medium); box-shadow: var(--shadow-sm);
+}
+
+.settings-body {
+  padding: 18px; overflow-y: auto; flex: 1; display: flex; flex-direction: column; gap: 16px;
+}
+.tab-section { display: none; flex-direction: column; gap: 12px; }
+.tab-section.active { display: flex; }
+.section-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); font-family: var(--font-mono); }
+.form-grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+
+/* Simulation Setup & Runner Box in Settings */
+.sim-runner-box {
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.settings-footer {
+  padding: 12px 18px; border-top: 1px solid var(--border-subtle);
+  background: #fafafa; display: flex; gap: 10px;
+}
+
+@media (max-width: 1200px) {
+  .layout-container.settings-open { grid-template-columns: 1fr; }
+  .settings-panel { position: fixed; inset: 16px; height: auto; z-index: 100; }
+  .workspace-grid { grid-template-columns: 1fr; }
+  .kpi-row { grid-template-columns: 1fr 1fr; }
+}
+</style>
+</head>
+<body>
+
+<div class="layout-container" id="app-container">
+
+  <!-- MAIN COLUMN -->
+  <main class="main-column">
+
+    <!-- INSTITUTIONAL HEADER -->
+    <header class="header-bar">
+      <div class="brand-group">
+        <div class="brand-symbol">H</div>
+        <div class="brand-title">HORIZON &bull; Wealth & Lifetime Allocation Engine</div>
+      </div>
+
+      <div class="header-controls">
+        <button class="btn btn-secondary" id="btn-toggle-settings">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+          <span id="settings-btn-label">Open Settings Window</span>
+        </button>
+      </div>
+    </header>
+
+    <!-- HERO KPIS -->
+    <section class="kpi-row">
+      <div class="kpi-card featured">
+        <span class="kpi-label">Certainty Equivalent</span>
+        <div class="kpi-num green" id="kpi-ce">$4,847<span style="font-size:14px; font-weight:500; color:var(--text-muted)">/mo</span></div>
+        <div class="kpi-subtext" id="kpi-ce-sub">The steady monthly income you would view as equally desirable to this strategy's fluctuating market outcomes, given your risk aversion (&gamma; = 3.0).</div>
+      </div>
+
+      <div class="kpi-card">
+        <span class="kpi-label">Median Spending</span>
+        <div class="kpi-num" id="kpi-median">$5,821<span style="font-size:14px; font-weight:500; color:var(--text-muted)">/mo</span></div>
+        <div class="kpi-subtext">In half of all simulated market lifecycles, your monthly net spending after housing is at or above this level.</div>
+      </div>
+
+      <div class="kpi-card">
+        <span class="kpi-label">Downside Crash Floor</span>
+        <div class="kpi-num amber" id="kpi-floor">$3,342<span style="font-size:14px; font-weight:500; color:var(--text-muted)">/mo</span></div>
+        <div class="kpi-subtext">In 90% of market simulations you spend at least this much; only the worst 10% of prolonged bear markets fall below.</div>
+      </div>
+
+      <div class="kpi-card">
+        <span class="kpi-label">Home Purchase Milestone</span>
+        <div class="kpi-num" style="font-size:22px" id="kpi-buy-age">Age 33.6</div>
+        <div class="kpi-subtext" id="kpi-buy-sub">Average age when target down payment is accumulated. Initial mortgage is <b class="mono" id="kpi-mortgage">$1,914/mo</b> (fully paid off by 55).</div>
+      </div>
+    </section>
+
+    <!-- WORKSPACE: DIALS + CANVAS S-CURVE -->
+    <div class="workspace-grid">
+      
+      <!-- RISK TOLERANCE PANEL -->
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">Risk Tolerance</span>
+        </div>
+
+        <div class="control-group">
+          <div class="control-top">
+            <span class="control-label">Risk Aversion (&gamma; &mdash; CRRA Utility)</span>
+            <span class="control-value" id="val-gamma">3.0 (Balanced)</span>
+          </div>
+          <input type="range" id="slider-gamma" min="0" max="8" step="0.5" value="3.0">
+        </div>
+
+        <div class="control-group">
+          <div class="control-top">
+            <span class="control-label">Drawdown Aversion (&lambda; &mdash; Ulcer Index)</span>
+            <span class="control-value" id="val-lambda">0.000 (Neutral)</span>
+          </div>
+          <input type="range" id="slider-lambda" min="0" max="0.04" step="0.005" value="0.000">
+          <span style="font-size:11px; color:var(--text-muted)">Penalizes strategies that suffer long, deep drawdowns.</span>
+        </div>
+
+        <button class="btn btn-green" id="btn-update-table" style="width:100%; margin-top:8px; padding:9px 16px;">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+          Update Table & Re-Rank
+        </button>
+      </div>
+
+      <!-- S-CURVE CANVAS CHART -->
+      <div class="chart-box">
+        <div class="chart-top">
+          <div>
+            <div class="chart-title-main" id="chart-strategy-name">HOUSE_VEQT &rarr; VEQT &rarr; VEQT+CASH &rarr; VEQT</div>
+            <div class="chart-desc">Net monthly lifestyle spending across simulated market cycles</div>
+          </div>
+          <div style="display:flex; align-items:center; gap:12px; font-size:11px; font-family:var(--font-mono)">
+            <span id="chart-crosshair-val" style="color:var(--brand-green); font-weight:700">Hover curve to inspect percentiles</span>
+          </div>
+        </div>
+        <div class="canvas-wrapper">
+          <canvas id="chart-canvas"></canvas>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- TABLE LEADERBOARD -->
+    <div class="table-card">
+      <div class="table-toolbar">
+        <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap">
+          <div class="segmented-pills" id="seg-mix">
+            <button class="seg-pill active" data-mix="ALL">All (5,040)</button>
+            <button class="seg-pill" data-mix="NO_CASH">No Cash</button>
+            <button class="seg-pill" data-mix="NO_GLIDEPATH">No Glidepath</button>
+            <button class="seg-pill" data-mix="ASSETS_ONLY">Assets Only</button>
+          </div>
+
+          <!-- Housing Strategy Mode Dropdown -->
+          <select id="filter-house" class="form-input" style="width:180px">
+            <option value="ALL" selected>All Housing Plans</option>
+            <option value="HOUSE_VEQT">Homeowner (VEQT Fund)</option>
+            <option value="HOUSE_VGRO">Homeowner (VGRO Fund)</option>
+            <option value="HOUSE_VBAL">Homeowner (VBAL Fund)</option>
+            <option value="HOUSE_CASH">Homeowner (CASH HISA)</option>
+            <option value="HOUSE_NONE">Renter ($2.5k Rent)</option>
+          </select>
+
+          <!-- All Accumulation Assets Dropdown -->
+          <select id="filter-accum" class="form-input" style="width:190px">
+            <option value="ALL">All Accumulation Assets</option>
+            <option value="VEQT">VEQT (100% Equity)</option>
+            <option value="VGRO">VGRO (80/20 Balanced)</option>
+            <option value="VBAL">VBAL (60/40 Conservative)</option>
+            <option value="VEQT1.5">VEQT1.5 (1.5x Leveraged)</option>
+            <option value="VEQT2">VEQT2 (2.0x Leveraged)</option>
+          </select>
+        </div>
+
+        <input type="text" id="table-search" placeholder="Filter strategy (e.g. VGRO, DECLINING)..." style="width:240px; padding:6px 10px; border:1px solid var(--border-medium); border-radius:6px;">
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th style="width:50px">Rank</th>
+              <th>Housing Strategy</th>
+              <th id="th-accum">Accumulation (25–55)</th>
+              <th id="th-bridge">Early Bridge (55–65)</th>
+              <th id="th-post">Post-65</th>
+              <th class="right">Average Buy Age</th>
+              <th class="right">Average Mortgage</th>
+              <th class="right" style="color:var(--brand-green)">Certainty Equivalent</th>
+              <th class="right">Median</th>
+              <th class="right">Ulcer Index</th>
+              <th class="right" style="color:var(--brand-amber)">P10</th>
+              <th class="right">P90</th>
+            </tr>
+          </thead>
+          <tbody id="table-body">
+            <!-- Populated by JS -->
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+  </main>
+
+  <!-- SIDE SETTINGS DOCKED WINDOW -->
+  <aside class="settings-panel" id="settings-window">
+    <div class="panel-titlebar">
+      <div>
+        <div class="panel-heading">Model Parameters & Fiscal Rules</div>
+        <div style="font-size:11px; color:var(--text-secondary); margin-top:2px">Quebec tax, career, CMA & real estate calibration</div>
+      </div>
+      <button class="panel-close-btn" id="btn-close-settings">&times;</button>
+    </div>
+
+    <!-- Category Nav Grid -->
+    <div class="category-nav">
+      <button class="cat-btn active" data-tab="tab-career">1. Career & Savings</button>
+      <button class="cat-btn" data-tab="tab-re">2. Real Estate</button>
+      <button class="cat-btn" data-tab="tab-tax">3. QC Tax & QPP</button>
+      <button class="cat-btn" data-tab="tab-cma">4. CMAs, Yield & Fees</button>
+      <button class="cat-btn" data-tab="tab-spend">5. Smile & Risk Model</button>
+    </div>
+
+    <div class="settings-body">
+      
+      <!-- TAB 1: CAREER & SAVINGS -->
+      <div class="tab-section active" id="tab-career">
+        <div class="section-label">Timeline & Career Milestones</div>
+        <div class="form-grid-2">
+          <div class="input-field">
+            <span class="field-label">Current Age</span>
+            <div class="input-affix-wrap"><input type="number" id="inp-currentAge" class="form-input" value="21"><span class="affix suffix">yrs</span></div>
+          </div>
+          <div class="input-field">
+            <span class="field-label">Career Start Age</span>
+            <div class="input-affix-wrap"><input type="number" id="inp-careerStartAge" class="form-input" value="25"><span class="affix suffix">yrs</span></div>
+          </div>
+          <div class="input-field">
+            <span class="field-label">Early Retirement Age</span>
+            <div class="input-affix-wrap"><input type="number" id="inp-retirementAge" class="form-input" value="55"><span class="affix suffix">yrs</span></div>
+          </div>
+          <div class="input-field">
+            <span class="field-label">Pension Age (QPP/OAS)</span>
+            <div class="input-affix-wrap"><input type="number" id="inp-pensionStartAge" class="form-input" value="65"><span class="affix suffix">yrs</span></div>
+          </div>
+          <div class="input-field">
+            <span class="field-label">Plan Horizon (Death Age)</span>
+            <div class="input-affix-wrap"><input type="number" id="inp-deathAge" class="form-input" value="95"><span class="affix suffix">yrs</span></div>
+          </div>
+          <div class="input-field">
+            <span class="field-label">Initial Income (Gross)</span>
+            <div class="input-affix-wrap"><span class="affix prefix">$</span><input type="text" id="inp-startingSalary" class="form-input" value="88,000"><span class="affix suffix">/ yr</span></div>
+          </div>
+        </div>
+
+        <div class="section-label">Annual Salary Growth Tiers</div>
+        <div class="form-grid-2">
+          <div class="input-field">
+            <span class="field-label" id="lbl-tier1">Early Career (25 – 32)</span>
+            <div class="input-affix-wrap"><input type="number" step="0.1" class="form-input" value="5.0"><span class="affix suffix">% / yr</span></div>
+          </div>
+          <div class="input-field">
+            <span class="field-label">Mid Career (32 – 42)</span>
+            <div class="input-affix-wrap"><input type="number" step="0.1" class="form-input" value="2.0"><span class="affix suffix">% / yr</span></div>
+          </div>
+          <div class="input-field">
+            <span class="field-label">Late Career (42 – 52)</span>
+            <div class="input-affix-wrap"><input type="number" step="0.1" class="form-input" value="1.0"><span class="affix suffix">% / yr</span></div>
+          </div>
+          <div class="input-field">
+            <span class="field-label" id="lbl-tier4">Senior Career (52 – 60)</span>
+            <div class="input-affix-wrap"><input type="number" step="0.1" class="form-input" value="0.5"><span class="affix suffix">% / yr</span></div>
+          </div>
+        </div>
+
+        <div class="section-label">Savings Rates & Workplace Match</div>
+        <div class="form-grid-2">
+          <div class="input-field">
+            <span class="field-label">Retirement Savings Start</span>
+            <div class="input-affix-wrap"><span class="affix prefix">$</span><input type="text" class="form-input" value="2,400"><span class="affix suffix">/ yr</span></div>
+          </div>
+          <div class="input-field">
+            <span class="field-label">Annual Savings Escalation</span>
+            <div class="input-affix-wrap"><input type="number" step="0.1" class="form-input" value="1.0"><span class="affix suffix">% / yr</span></div>
+          </div>
+          <div class="input-field">
+            <span class="field-label">Max Savings Fraction (Cap)</span>
+            <div class="input-affix-wrap"><input type="number" step="1" class="form-input" value="20.0"><span class="affix suffix">% net</span></div>
+          </div>
+          <div class="input-field">
+            <span class="field-label">Employer Match Rate</span>
+            <div class="input-affix-wrap"><input type="number" step="0.5" class="form-input" value="4.0"><span class="affix suffix">%</span></div>
+          </div>
+          <div class="input-field">
+            <span class="field-label">Employer Match Coverage</span>
+            <div class="input-affix-wrap"><input type="number" step="10" class="form-input" value="100.0"><span class="affix suffix">%</span></div>
+          </div>
+          <div class="input-field">
+            <span class="field-label">Annual Layoff Probability</span>
+            <div class="input-affix-wrap"><input type="number" step="0.5" class="form-input" value="5.0"><span class="affix suffix">%</span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- TAB 2: REAL ESTATE & RENTING -->
+      <div class="tab-section" id="tab-re">
+        <div class="section-label">Property & Mortgage Parameters</div>
+        <div class="form-grid-2">
+          <div class="input-field">
+            <span class="field-label">Target Property Value</span>
+            <div class="input-affix-wrap"><span class="affix prefix">$</span><input type="text" class="form-input" value="500,000"></div>
+          </div>
+          <div class="input-field">
+            <span class="field-label">Down Payment Fraction</span>
+            <div class="input-affix-wrap"><input type="number" step="1" class="form-input" value="20.0"><span class="affix suffix">%</span></div>
+          </div>
+          <div class="input-field">
+            <span class="field-label">Closing & Welcome Tax</span>
+            <div class="input-affix-wrap"><span class="affix prefix">$</span><input type="text" class="form-input" value="10,000"></div>
+          </div>
+          <div class="input-field">
+            <span class="field-label">Real Mortgage Interest Rate</span>
+            <div class="input-affix-wrap"><input type="number" step="0.05" class="form-input" value="2.00"><span class="affix suffix">% / yr</span></div>
+          </div>
+          <div class="input-field">
+            <span class="field-label">Condo Fees + Municipal Tax</span>
+            <div class="input-affix-wrap"><span class="affix prefix">$</span><input type="text" class="form-input" value="650"><span class="affix suffix">/ mo</span></div>
+          </div>
+          <div class="input-field">
+            <span class="field-label">Market Rent (Renter Baseline)</span>
+            <div class="input-affix-wrap"><span class="affix prefix">$</span><input type="text" class="form-input" value="2,500"><span class="affix suffix">/ mo</span></div>
+          </div>
+        </div>
+
+        <div class="section-label">Housing Savings & Registered Programs</div>
+        <div class="form-grid-2">
+          <div class="input-field">
+            <span class="field-label">House Savings Start</span>
+            <div class="input-affix-wrap"><span class="affix prefix">$</span><input type="text" class="form-input" value="1,200"><span class="affix suffix">/ yr</span></div>
+          </div>
+          <div class="input-field">
+            <span class="field-label">House Savings Escalation</span>
+            <div class="input-affix-wrap"><input type="number" step="0.1" class="form-input" value="2.0"><span class="affix suffix">% / yr</span></div>
+          </div>
+          <div class="input-field">
+            <span class="field-label">FHSA Annual Contribution</span>
+            <div class="input-affix-wrap"><span class="affix prefix">$</span><input type="text" class="form-input" value="8,000"><span class="affix suffix">/ yr</span></div>
+          </div>
+          <div class="input-field">
+            <span class="field-label">FHSA Lifetime Maximum</span>
+            <div class="input-affix-wrap"><span class="affix prefix">$</span><input type="text" class="form-input" value="40,000"></div>
+          </div>
+          <div class="input-field">
+            <span class="field-label">HBP Max RRSP Withdrawal</span>
+            <div class="input-affix-wrap"><span class="affix prefix">$</span><input type="text" class="form-input" value="60,000"></div>
+          </div>
+          <div class="input-field">
+            <span class="field-label">HBP Repayment Period</span>
+            <div class="input-affix-wrap"><input type="number" class="form-input" value="15"><span class="affix suffix">yrs</span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- TAB 3: TAX & QPP -->
+      <div class="tab-section" id="tab-tax">
+        <div class="section-label">Quebec & Federal Income Tax Rules</div>
+        <div class="form-grid-2">
+          <div class="input-field">
+            <span class="field-label">RRSP Meltdown Ceiling</span>
+            <div class="input-affix-wrap"><span class="affix prefix">$</span><input type="text" class="form-input" value="55,000"><span class="affix suffix">/ yr</span></div>
+          </div>
+          <div class="input-field">
+            <span class="field-label">OAS Clawback Threshold</span>
+            <div class="input-affix-wrap"><span class="affix prefix">$</span><input type="text" class="form-input" value="95,323"><span class="affix suffix">/ yr</span></div>
+          </div>
+          <div class="input-field">
+            <span class="field-label">Capital Gains Inclusion Rate</span>
+            <div class="input-affix-wrap"><input type="number" step="1" class="form-input" value="50.0"><span class="affix suffix">%</span></div>
+          </div>
+          <div class="input-field">
+            <span class="field-label">Capital Gains Marginal Tax</span>
+            <div class="input-affix-wrap"><input type="number" step="1" class="form-input" value="30.0"><span class="affix suffix">%</span></div>
+          </div>
+        </div>
+
+        <div class="section-label">Enhanced QPP & OAS Government Pensions</div>
+        <div class="form-grid-2">
+          <div class="input-field">
+            <span class="field-label">Enhanced QPP Max at 65</span>
+            <div class="input-affix-wrap"><span class="affix prefix">$</span><input type="text" class="form-input" value="25,500"><span class="affix suffix">/ yr</span></div>
+          </div>
+          <div class="input-field">
+            <span class="field-label">OAS Maximum at 65</span>
+            <div class="input-affix-wrap"><span class="affix prefix">$</span><input type="text" class="form-input" value="8,908"><span class="affix suffix">/ yr</span></div>
+          </div>
+          <div class="input-field">
+            <span class="field-label">QPP Tier 1 MGA (YMPE)</span>
+            <div class="input-affix-wrap"><span class="affix prefix">$</span><input type="text" class="form-input" value="71,300"></div>
+          </div>
+          <div class="input-field">
+            <span class="field-label">QPP Tier 2 MSGA (YAMPE)</span>
+            <div class="input-affix-wrap"><span class="affix prefix">$</span><input type="text" class="form-input" value="81,200"></div>
+          </div>
+          <div class="input-field">
+            <span class="field-label">QPP Deferral Rate (to 72)</span>
+            <div class="input-affix-wrap"><input type="number" step="0.1" class="form-input" value="8.4"><span class="affix suffix">% / yr</span></div>
+          </div>
+          <div class="input-field">
+            <span class="field-label">OAS Deferral Rate (to 70)</span>
+            <div class="input-affix-wrap"><input type="number" step="0.1" class="form-input" value="7.2"><span class="affix suffix">% / yr</span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- TAB 4: CMAS, YIELD & FEES -->
+      <div class="tab-section" id="tab-cma">
+        <div class="section-label">Real Expected Returns (CMAs) & Distributions</div>
+        <div class="form-grid-2">
+          <div class="input-field">
+            <span class="field-label">VEQT Real Expected Return</span>
+            <div class="input-affix-wrap"><input type="number" step="0.05" class="form-input" value="4.30"><span class="affix suffix">% / yr</span></div>
+          </div>
+          <div class="input-field">
+            <span class="field-label">VGRO Real Expected Return</span>
+            <div class="input-affix-wrap"><input type="number" step="0.05" class="form-input" value="3.71"><span class="affix suffix">% / yr</span></div>
+          </div>
+          <div class="input-field">
+            <span class="field-label">VBAL Real Expected Return</span>
+            <div class="input-affix-wrap"><input type="number" step="0.05" class="form-input" value="3.12"><span class="affix suffix">% / yr</span></div>
+          </div>
+          <div class="input-field">
+            <span class="field-label">HISA Cash Real Return</span>
+            <div class="input-affix-wrap"><input type="number" step="0.05" class="form-input" value="-0.50"><span class="affix suffix">% / yr</span></div>
+          </div>
+          <div class="input-field">
+            <span class="field-label">Distribution Yield</span>
+            <div class="input-affix-wrap"><input type="number" step="0.1" class="form-input" value="1.8"><span class="affix suffix">% / yr</span></div>
+          </div>
+          <div class="input-field">
+            <span class="field-label">Tax on Distributions</span>
+            <div class="input-affix-wrap"><input type="number" step="1" class="form-input" value="25.0"><span class="affix suffix">%</span></div>
+          </div>
+        </div>
+
+        <div class="section-label">Leverage Borrowing & Cash Buffer</div>
+        <div class="form-grid-2">
+          <div class="input-field">
+            <span class="field-label">Real Borrowing Rate</span>
+            <div class="input-affix-wrap"><input type="number" step="0.05" class="form-input" value="2.25"><span class="affix suffix">% / yr</span></div>
+          </div>
+          <div class="input-field">
+            <span class="field-label">Extra MER for VEQT1.5</span>
+            <div class="input-affix-wrap"><input type="number" step="0.01" class="form-input" value="0.20"><span class="affix suffix">% / yr</span></div>
+          </div>
+          <div class="input-field">
+            <span class="field-label">Extra MER for VEQT2.0</span>
+            <div class="input-affix-wrap"><input type="number" step="0.01" class="form-input" value="0.40"><span class="affix suffix">% / yr</span></div>
+          </div>
+          <div class="input-field">
+            <span class="field-label">Cash Wedge Duration</span>
+            <div class="input-affix-wrap"><input type="number" step="0.5" class="form-input" value="3.0"><span class="affix suffix">yrs</span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- TAB 5: SPENDING SMILE & RISK MODEL -->
+      <div class="tab-section" id="tab-spend">
+        <div class="section-label">Retirement Spending Smile Tiers</div>
+        <div class="form-grid-2">
+          <div class="input-field">
+            <span class="field-label">Active Phase (60 – 70)</span>
+            <div class="input-affix-wrap"><input type="number" step="0.1" class="form-input" value="0.0"><span class="affix suffix">% / yr</span></div>
+          </div>
+          <div class="input-field">
+            <span class="field-label">Slowing Phase (70 – 77)</span>
+            <div class="input-affix-wrap"><input type="number" step="0.1" class="form-input" value="-1.0"><span class="affix suffix">% / yr</span></div>
+          </div>
+          <div class="input-field">
+            <span class="field-label">Late Phase (77 – 78)</span>
+            <div class="input-affix-wrap"><input type="number" step="0.1" class="form-input" value="-1.5"><span class="affix suffix">% / yr</span></div>
+          </div>
+          <div class="input-field">
+            <span class="field-label">Care Phase (78 – 95)</span>
+            <div class="input-affix-wrap"><input type="number" step="0.1" class="form-input" value="1.2"><span class="affix suffix">% / yr</span></div>
+          </div>
+        </div>
+
+        <div class="section-label">Heavy-Tailed Skew & Calibration</div>
+        <div class="form-grid-2">
+          <div class="input-field">
+            <span class="field-label">Degrees of Freedom (&nu;)</span>
+            <div class="input-affix-wrap"><input type="number" class="form-input" value="5"></div>
+          </div>
+          <div class="input-field">
+            <span class="field-label">Skew Delta Cap</span>
+            <div class="input-affix-wrap"><input type="number" step="0.01" class="form-input" value="0.85"></div>
+          </div>
+          <div class="input-field">
+            <span class="field-label">Mortality Reduction</span>
+            <div class="input-affix-wrap"><input type="number" step="0.05" class="form-input" value="0.50"></div>
+          </div>
+          <div class="input-field">
+            <span class="field-label">Annual Discount Rate</span>
+            <div class="input-affix-wrap"><input type="number" step="0.1" class="form-input" value="1.0"><span class="affix suffix">% / yr</span></div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Simulation Runner Setup Inside Settings -->
+    <div style="padding: 0 18px 10px;">
+      <div class="sim-runner-box">
+        <div class="control-top">
+          <span class="control-label">Monte Carlo Path Count</span>
+          <span class="control-value" id="val-sim-count">1,000 Paths</span>
+        </div>
+        <input type="range" id="slider-sim-count" min="500" max="10000" step="500" value="1000">
+      </div>
+    </div>
+
+    <!-- Settings Window Actions: Reset Defaults & Re-Simulate -->
+    <div class="settings-footer">
+      <button class="btn btn-secondary" style="flex:1" id="btn-reset-defaults">Reset Defaults</button>
+      <button class="btn btn-primary" style="flex:1.5" id="btn-run-sim">Re-Simulate</button>
+    </div>
+  </aside>
+
+</div>
+
+<script>
+// Mock Quantitative Dataset
+const DATASET = [
+  { rank: 1, name: "HOUSE_VEQT_VEQT_VEQT+CASH_VEQT", house: "HOUSE_VEQT", accum: "VEQT", bridge: "VEQT+CASH", post: "VEQT", buyAge: 33.6, mortgage: 1914, ce: 4847, median: 5821, floor: 3342, p90: 10018, ui: 13.2, hasCash: true, hasGlide: false },
+  { rank: 2, name: "HOUSE_VEQT_VEQT_VEQT+CASH_VEQT+CASH", house: "HOUSE_VEQT", accum: "VEQT", bridge: "VEQT+CASH", post: "VEQT+CASH", buyAge: 33.6, mortgage: 1914, ce: 4842, median: 5790, floor: 3340, p90: 9940, ui: 13.2, hasCash: true, hasGlide: false },
+  { rank: 3, name: "HOUSE_VEQT_VEQT_VEQT+CASH_DECLINING", house: "HOUSE_VEQT", accum: "VEQT", bridge: "VEQT+CASH", post: "DECLINING", buyAge: 33.6, mortgage: 1914, ce: 4827, median: 5750, floor: 3320, p90: 9810, ui: 12.9, hasCash: true, hasGlide: true },
+  { rank: 4, name: "HOUSE_VGRO_VEQT_VEQT+CASH_VEQT", house: "HOUSE_VGRO", accum: "VEQT", bridge: "VEQT+CASH", post: "VEQT", buyAge: 34.0, mortgage: 1942, ce: 4826, median: 5802, floor: 3330, p90: 9980, ui: 13.2, hasCash: true, isBuyer: true },
+  { rank: 5, name: "HOUSE_VGRO_VEQT_VEQT+CASH_VEQT+CASH", house: "HOUSE_VGRO", accum: "VEQT", bridge: "VEQT+CASH", post: "VEQT+CASH", buyAge: 34.0, mortgage: 1942, ce: 4821, median: 5780, floor: 3325, p90: 9910, ui: 13.2, hasCash: true, isBuyer: true },
+  { rank: 6, name: "HOUSE_VEQT_RISING_VEQT+CASH_VEQT", house: "HOUSE_VEQT", accum: "RISING", bridge: "VEQT+CASH", post: "VEQT", buyAge: 33.6, mortgage: 1914, ce: 4809, median: 5710, floor: 3305, p90: 9800, ui: 12.9, hasCash: true, hasGlide: true },
+  { rank: 7, name: "HOUSE_VGRO_VEQT_VEQT+CASH_DECLINING", house: "HOUSE_VGRO", accum: "VEQT", bridge: "VEQT+CASH", post: "DECLINING", buyAge: 34.0, mortgage: 1942, ce: 4804, median: 5730, floor: 3300, p90: 9820, ui: 12.9, hasCash: true, hasGlide: true },
+  { rank: 8, name: "HOUSE_VEQT_RISING_VEQT+CASH_VEQT+CASH", house: "HOUSE_VEQT", accum: "RISING", bridge: "VEQT+CASH", post: "VEQT+CASH", buyAge: 33.6, mortgage: 1914, ce: 4803, median: 5690, floor: 3300, p90: 9750, ui: 12.8, hasCash: true, hasGlide: true },
+  { rank: 9, name: "HOUSE_VBAL_VEQT_VEQT+CASH_VEQT", house: "HOUSE_VBAL", accum: "VEQT", bridge: "VEQT+CASH", post: "VEQT", buyAge: 34.0, mortgage: 1942, ce: 4802, median: 5760, floor: 3310, p90: 9890, ui: 13.2, hasCash: true, hasGlide: false },
+  { rank: 10, name: "HOUSE_VBAL_VEQT_VEQT+CASH_VEQT+CASH", house: "HOUSE_VBAL", accum: "VEQT", bridge: "VEQT+CASH", post: "VEQT+CASH", buyAge: 34.0, mortgage: 1942, ce: 4793, median: 5740, floor: 3300, p90: 9840, ui: 13.2, hasCash: true, hasGlide: false },
+  { rank: 11, name: "HOUSE_NONE_VEQT_VEQT+CASH_VEQT", house: "HOUSE_NONE", accum: "VEQT", bridge: "VEQT+CASH", post: "VEQT", buyAge: null, mortgage: null, ce: 4680, median: 5620, floor: 3180, p90: 9650, ui: 14.1, hasCash: true, hasGlide: false },
+  { rank: 12, name: "HOUSE_NONE_VGRO_VGRO+CASH_VGRO", house: "HOUSE_NONE", accum: "VGRO", bridge: "VGRO+CASH", post: "VGRO", buyAge: null, mortgage: null, ce: 4420, median: 5120, floor: 3250, p90: 8920, ui: 10.8, hasCash: true, hasGlide: false },
+  { rank: 13, name: "HOUSE_VEQT_VEQT_VEQT_VEQT", house: "HOUSE_VEQT", accum: "VEQT", bridge: "VEQT", post: "VEQT", buyAge: 33.6, mortgage: 1914, ce: 4760, median: 5890, floor: 3120, p90: 10250, ui: 15.8, hasCash: false, hasGlide: false }
+];
+
+let activeStrategy = DATASET[0];
+
+function formatCurrency(num) {
+  if (num == null) return "—";
+  return "$" + Math.round(num).toLocaleString("en-US");
+}
+
+function renderBadge(str) {
+  if (!str) return "";
+  const isCash = str.includes("+CASH");
+  const base = str.replace("+CASH", "");
+  let cls = "badge-veqt";
+  if (base === "VGRO") cls = "badge-vgro";
+  else if (base === "VBAL") cls = "badge-vbal";
+  else if (base === "DECLINING" || base === "RISING") cls = "badge-glide";
+  
+  let html = `<span class="badge ${cls}">${base}</span>`;
+  if (isCash) html += ` <span class="badge badge-cash">+CASH</span>`;
+  return html;
+}
+
+function renderHouseBadge(house) {
+  if (house === "HOUSE_NONE") return `<span class="badge badge-house-rent">Renter ($2.5k)</span>`;
+  return `<span class="badge badge-house-buy">Buyer ($500k)</span>`;
+}
+
+// Render Leaderboard
+function renderLeaderboard() {
+  const tbody = document.getElementById("table-body");
+  tbody.innerHTML = "";
+
+  const houseFilter = document.getElementById("filter-house").value;
+  const accumFilter = document.getElementById("filter-accum").value;
+  const mixFilter = document.querySelector("#seg-mix .seg-pill.active").dataset.mix;
+  const search = document.getElementById("table-search").value.toUpperCase().trim();
+
+  let rows = DATASET.filter(row => {
+    if (houseFilter !== "ALL" && row.house !== houseFilter) return false;
+    if (accumFilter !== "ALL" && row.accum !== accumFilter) return false;
+    
+    // Segmented Mix Filters
+    if (mixFilter === "NO_CASH" && row.hasCash) return false;
+    if (mixFilter === "NO_GLIDEPATH" && row.hasGlide) return false;
+    if (mixFilter === "ASSETS_ONLY" && (row.hasCash || row.hasGlide)) return false;
+    
+    if (search && !row.name.toUpperCase().includes(search)) return false;
+    return true;
+  });
+
+  if (!rows.length) {
+    tbody.innerHTML = `<tr><td colspan="12" style="text-align:center; padding:32px; color:var(--text-muted); font-family:var(--font-mono)">No strategies match your criteria.</td></tr>`;
+    return;
+  }
+
+  rows.forEach((item) => {
+    const tr = document.createElement("tr");
+    if (item.name === activeStrategy.name) tr.classList.add("selected-row");
+    tr.innerHTML = `
+      <td class="mono" style="font-weight:700; color:var(--brand-navy)">${item.rank}</td>
+      <td>${renderHouseBadge(item.house)}</td>
+      <td>${renderBadge(item.accum)}</td>
+      <td>${renderBadge(item.bridge)}</td>
+      <td>${renderBadge(item.post)}</td>
+      <td class="right mono" style="color:var(--text-muted)">${item.buyAge ? item.buyAge.toFixed(1) : '—'}</td>
+      <td class="right mono" style="color:var(--text-muted)">${item.mortgage ? formatCurrency(item.mortgage) : '—'}</td>
+      <td class="right mono" style="font-weight:700; color:var(--brand-green)">${formatCurrency(item.ce)}/mo</td>
+      <td class="right mono">${formatCurrency(item.median)}/mo</td>
+      <td class="right mono" style="color:${item.ui < 14 ? 'var(--brand-green)' : 'var(--brand-amber)'}">${item.ui.toFixed(1)}</td>
+      <td class="right mono" style="color:var(--brand-amber); font-weight:600">${formatCurrency(item.floor)}/mo</td>
+      <td class="right mono">${formatCurrency(item.p90)}/mo</td>
+    `;
+    tr.addEventListener("click", () => selectStrategy(item));
+    tbody.appendChild(tr);
+  });
+}
+
+function selectStrategy(strat) {
+  activeStrategy = strat;
+  document.getElementById("kpi-ce").innerHTML = `${formatCurrency(strat.ce)}<span style="font-size:14px; font-weight:500; color:var(--text-muted)">/mo</span>`;
+  document.getElementById("kpi-median").innerHTML = `${formatCurrency(strat.median)}<span style="font-size:14px; font-weight:500; color:var(--text-muted)">/mo</span>`;
+  document.getElementById("kpi-floor").innerHTML = `${formatCurrency(strat.floor)}<span style="font-size:14px; font-weight:500; color:var(--text-muted)">/mo</span>`;
+  document.getElementById("kpi-buy-age").textContent = strat.buyAge ? `Age ${strat.buyAge}` : 'Renter';
+  document.getElementById("kpi-mortgage").textContent = strat.mortgage ? `${formatCurrency(strat.mortgage)}/mo` : 'None';
+  document.getElementById("chart-strategy-name").textContent = strat.name;
+
+  renderLeaderboard();
+  drawDistributionChart();
+}
+
+// S-Curve Canvas with Masked Badges
+let hoverPercentile = null;
+
+function drawDistributionChart() {
+  const canvas = document.getElementById("chart-canvas");
+  const ctx = canvas.getContext("2d");
+  const ratio = window.devicePixelRatio || 1;
+  const width = canvas.parentElement.clientWidth;
+  const height = canvas.parentElement.clientHeight;
+
+  canvas.width = width * ratio;
+  canvas.height = height * ratio;
+  ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+  ctx.clearRect(0, 0, width, height);
+
+  const padLeft = 45, padRight = 20, padTop = 26, padBottom = 25;
+  const pWidth = width - padLeft - padRight;
+  const pHeight = height - padTop - padBottom;
+
+  // Grid Lines
+  ctx.strokeStyle = "#e2e8f0";
+  ctx.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) {
+    const y = padTop + (pHeight / 4) * i;
+    ctx.beginPath(); ctx.moveTo(padLeft, y); ctx.lineTo(width - padRight, y); ctx.stroke();
+  }
+
+  // Draw Curve
+  ctx.strokeStyle = "#0f172a";
+  ctx.lineWidth = 2.5;
+  ctx.beginPath();
+  const minVal = 1584, maxVal = 24630;
+  for (let i = 0; i <= 100; i++) {
+    const p = i / 100;
+    const v = minVal + Math.pow(p, 2.3) * (maxVal - minVal);
+    const x = padLeft + p * pWidth;
+    const y = padTop + pHeight * (1 - (v - minVal) / (maxVal - minVal));
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+
+  // Highlight Percentile Markers with Background Masking
+  const markers = [
+    { p: 0.10, label: "P10 Floor", val: activeStrategy.floor, color: "#d97706", bgColor: "#fffbeb", borderColor: "#fde68a" },
+    { p: 0.50, label: "Median (P50)", val: activeStrategy.median, color: "#059669", bgColor: "#ecfdf5", borderColor: "#a7f3d0" }
+  ];
+
+  markers.forEach(m => {
+    const x = padLeft + m.p * pWidth;
+
+    // Draw Dashed Line First
+    ctx.strokeStyle = m.color;
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([3, 3]);
+    ctx.beginPath(); ctx.moveTo(x, padTop + 2); ctx.lineTo(x, height - padBottom); ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Draw Masked Floating Pill Badge at Top
+    const text = `${m.label}: ${formatCurrency(m.val)}`;
+    ctx.font = "700 10px Plus Jakarta Sans, sans-serif";
+    const textMetrics = ctx.measureText(text);
+    const badgeW = textMetrics.width + 14;
+    const badgeH = 18;
+    const badgeX = Math.max(padLeft, Math.min(width - padRight - badgeW, x - badgeW / 2));
+    const badgeY = padTop - 20;
+
+    // Solid Background Mask
+    ctx.fillStyle = m.bgColor;
+    ctx.strokeStyle = m.borderColor;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.roundRect(badgeX, badgeY, badgeW, badgeH, 4);
+    ctx.fill();
+    ctx.stroke();
+
+    // Badge Text
+    ctx.fillStyle = m.color;
+    ctx.fillText(text, badgeX + 7, badgeY + 12);
+  });
+
+  // Dynamic Hover Crosshair
+  if (hoverPercentile !== null) {
+    const p = hoverPercentile;
+    const v = minVal + Math.pow(p, 2.3) * (maxVal - minVal);
+    const x = padLeft + p * pWidth;
+    const y = padTop + pHeight * (1 - (v - minVal) / (maxVal - minVal));
+
+    ctx.strokeStyle = "#0284c7";
+    ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.arc(x, y, 4, 0, Math.PI * 2); ctx.fillStyle = "#0284c7"; ctx.fill(); ctx.stroke();
+
+    document.getElementById("chart-crosshair-val").textContent = `P${Math.round(p * 100)}: ${formatCurrency(v)} / mo`;
+  } else {
+    document.getElementById("chart-crosshair-val").textContent = `Hover curve to inspect percentiles`;
+  }
+
+  ctx.fillStyle = "#64748b";
+  ctx.font = "10px JetBrains Mono, monospace";
+  ctx.fillText("$24.6k", 4, padTop + 8);
+  ctx.fillText("$1.5k", 4, height - padBottom);
+  ctx.fillText("P0", padLeft, height - 8);
+  ctx.fillText("P50", padLeft + pWidth / 2 - 10, height - 8);
+  ctx.fillText("P100", width - padRight - 28, height - 8);
+}
+
+// Chart mouse interaction
+const chartCanvas = document.getElementById("chart-canvas");
+chartCanvas.addEventListener("mousemove", (e) => {
+  const rect = chartCanvas.getBoundingClientRect();
+  const padLeft = 45, padRight = 20;
+  const pWidth = rect.width - padLeft - padRight;
+  const x = e.clientX - rect.left - padLeft;
+  if (x >= 0 && x <= pWidth) {
+    hoverPercentile = x / pWidth;
+    drawDistributionChart();
+  }
+});
+chartCanvas.addEventListener("mouseleave", () => {
+  hoverPercentile = null;
+  drawDistributionChart();
+});
+
+// Side-by-Side Settings Dock Window
+const container = document.getElementById("app-container");
+const btnToggle = document.getElementById("btn-toggle-settings");
+const btnClose = document.getElementById("btn-close-settings");
+const btnLabel = document.getElementById("settings-btn-label");
+
+function toggleSettings() {
+  const isOpen = container.classList.toggle("settings-open");
+  btnToggle.classList.toggle("active", isOpen);
+  btnLabel.textContent = isOpen ? "Close Settings Window" : "Open Settings Window";
+  setTimeout(drawDistributionChart, 290);
+}
+
+btnToggle.addEventListener("click", toggleSettings);
+btnClose.addEventListener("click", toggleSettings);
+
+// Clean Grid Tab Switching
+document.querySelectorAll(".cat-btn").forEach(btn => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".cat-btn").forEach(b => b.classList.remove("active"));
+    document.querySelectorAll(".tab-section").forEach(p => p.classList.remove("active"));
+    btn.classList.add("active");
+    document.getElementById(btn.dataset.tab).classList.add("active");
+  });
+});
+
+// Segmented Filter Control
+document.querySelectorAll("#seg-mix .seg-pill").forEach(btn => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll("#seg-mix .seg-pill").forEach(b => b.classList.remove("active"));
+    btn.classList.add("active");
+    renderLeaderboard();
+  });
+});
+
+// Risk Aversion (γ) exact brackets: 0.0 Risk-Neutral, 0.5-2.5 Aggressive, 3.0-3.5 Balanced, 4.0-6.0 Conservative, 6.5+ Highly-Conservative
+document.getElementById("slider-gamma").addEventListener("input", (e) => {
+  const g = parseFloat(e.target.value);
+  let label = "Balanced";
+  if (g === 0.0) label = "Risk-Neutral";
+  else if (g >= 0.5 && g <= 2.5) label = "Aggressive";
+  else if (g >= 3.0 && g <= 3.5) label = "Balanced";
+  else if (g >= 4.0 && g <= 6.0) label = "Conservative";
+  else if (g >= 6.5) label = "Highly-Conservative";
+  
+  document.getElementById("val-gamma").textContent = `${g.toFixed(1)} (${label})`;
+  document.getElementById("kpi-ce-sub").textContent = `The steady monthly income you would view as equally desirable to this strategy's fluctuating market outcomes, given your risk aversion (γ = ${g.toFixed(1)}).`;
+});
+
+document.getElementById("slider-lambda").addEventListener("input", (e) => {
+  const l = parseFloat(e.target.value);
+  document.getElementById("val-lambda").textContent = l === 0 ? "0.000 (Neutral)" : `${l.toFixed(3)} (Active)`;
+});
+
+document.getElementById("slider-sim-count").addEventListener("input", (e) => {
+  document.getElementById("val-sim-count").textContent = `${parseInt(e.target.value).toLocaleString('en-US')} Paths`;
+});
+
+// Update Table Button Listener
+document.getElementById("btn-update-table").addEventListener("click", () => {
+  const btn = document.getElementById("btn-update-table");
+  btn.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg> Applied!`;
+  renderLeaderboard();
+  setTimeout(() => {
+    btn.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg> Update Table & Re-Rank`;
+  }, 900);
+});
+
+// LIVE Parameter Label Updating (Immediate reactivity inside settings window before re-simulate)
+function updateLiveSettingsLabels() {
+  const careerStart = parseInt(document.getElementById("inp-careerStartAge").value) || 25;
+  const lblTier1 = document.getElementById("lbl-tier1");
+  if (lblTier1) {
+    lblTier1.textContent = `Early Career (${careerStart} – 32)`;
+  }
+}
+
+document.getElementById("inp-careerStartAge").addEventListener("input", updateLiveSettingsLabels);
+
+// Re-Simulate Action: Updates all dynamic dependent texts in table and KPIs
+function triggerReSimulate() {
+  const careerStart = parseInt(document.getElementById("inp-careerStartAge").value) || 25;
+  const retirementAge = parseInt(document.getElementById("inp-retirementAge").value) || 55;
+  const pensionAge = parseInt(document.getElementById("inp-pensionStartAge").value) || 65;
+
+  // Dynamic Table Headers
+  document.getElementById("th-accum").textContent = `Accumulation (${careerStart}–${retirementAge})`;
+  document.getElementById("th-bridge").textContent = `Early Bridge (${retirementAge}–${pensionAge})`;
+  document.getElementById("th-post").textContent = `Post-${pensionAge}`;
+
+  // Dynamic Milestone Subtext
+  document.getElementById("kpi-buy-sub").innerHTML = `Average age when target down payment is accumulated. Initial mortgage is <b class="mono" id="kpi-mortgage">$1,914/mo</b> (fully paid off by ${retirementAge}).`;
+
+  const btn = document.getElementById("btn-run-sim");
+  btn.innerHTML = `Simulating...`;
+  setTimeout(() => {
+    btn.innerHTML = `Re-Simulate`;
+    renderLeaderboard();
+  }, 350);
+}
+
+document.getElementById("btn-run-sim").addEventListener("click", triggerReSimulate);
+document.getElementById("filter-house").addEventListener("change", renderLeaderboard);
+document.getElementById("filter-accum").addEventListener("change", renderLeaderboard);
+document.getElementById("table-search").addEventListener("input", renderLeaderboard);
+
+// Initialize
+renderLeaderboard();
+drawDistributionChart();
+updateLiveSettingsLabels();
+window.addEventListener("resize", drawDistributionChart);
+</script>
+
+</body>
+</html>
