@@ -14,7 +14,7 @@ This repo contains AI generated code from models such as `Deepseek-V4-Flash` and
 
 What follows is the AI generated readme file explaining what this tool is and how to use it:
 
-# HORIZON — Wealth & Lifetime Allocation Engine
+# Wealth & Lifetime Allocation Engine
 
 A client-side, GPU-accelerated lifetime asset-allocation and retirement
 simulation for a Quebec resident, built to run 100% in the browser
@@ -182,7 +182,7 @@ values the engine stores as raw decimals (`0.2`, `88000`, `0.043`).
 If the app reports that WebGPU is unavailable or a run does nothing:
 
 1. Open the browser console (F12) — every step of the pipeline logs
-   **`HORIZON`**-prefixed lines (adapter selection, buffer sizes, batch
+   **`ENGINE`**-prefixed lines (adapter selection, buffer sizes, batch
    progress, quantile reduction) and every failure logs full context plus a
    diagnostics snapshot.
 2. Run `dumpDiagnostics()` in the console to print a complete snapshot:

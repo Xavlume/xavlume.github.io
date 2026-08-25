@@ -1,4 +1,4 @@
-"""Python WebGPU compute harness for the Horizon retirement engine.
+"""Python WebGPU compute harness for the retirement engine.
 
 This module drives the exact WGSL pipeline that the browser build runs, using
 the `wgpu` package: returns and layoffs are generated on-chip from the seed,

@@ -462,7 +462,7 @@ def main() -> int:
         driver.execute_async_script("window.dumpDiagnostics().then(() => arguments[0]());")
         time.sleep(0.5)
         # Deliberate validation failure: a zero starting salary must surface
-        # in the UI AND be logged to the console with HORIZON context.
+        # in the UI AND be logged to the console with ENGINE context.
         driver.execute_script(
             "const s = schemaInputs(); s['tab-career:5'].value = '0';"
             "byId('btn-run-sim').click();"
@@ -475,9 +475,9 @@ def main() -> int:
               err_state["bad"] and "Starting salary must be positive" in err_state["msg"],
               f"'{err_state['msg']}'")
         error_logs = driver.get_log("browser")
-        horizon_lines = [e for e in error_logs if "HORIZON" in e["message"]]
-        check("failure is logged to the console with HORIZON context", len(horizon_lines) > 0,
-              f"{len(horizon_lines)} HORIZON log lines")
+        engine_lines = [e for e in error_logs if "ENGINE" in e["message"]]
+        check("failure is logged to the console with ENGINE context", len(engine_lines) > 0,
+              f"{len(engine_lines)} ENGINE log lines")
         driver.execute_script("byId('btn-reset-defaults').click();")
 
         print("\n" + "=" * 100)

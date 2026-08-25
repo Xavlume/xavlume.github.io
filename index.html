@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Horizon &mdash; Wealth & Lifetime Allocation Engine</title>
+<title>Wealth &amp; Lifetime Allocation Engine</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -87,12 +87,6 @@ body {
   gap: 12px;
 }
 .brand-group { display: flex; align-items: center; gap: 12px; }
-.brand-symbol {
-  width: 34px; height: 34px; border-radius: 8px;
-  background: var(--brand-navy); color: #ffffff;
-  display: flex; align-items: center; justify-content: center;
-  font-weight: 800; font-size: 15px; font-family: var(--font-mono);
-}
 .brand-title { font-size: 15px; font-weight: 700; color: var(--text-primary); letter-spacing: -0.02em; }
 
 .header-controls { display: flex; align-items: center; gap: 10px; }
@@ -390,7 +384,7 @@ td { padding: 10px 12px; vertical-align: middle; white-space: nowrap; }
   .kpi-row { grid-template-columns: 1fr 1fr; }
 }
 </style>
-<style>.engine-chip.ok{color:var(--brand-green);font-weight:700}.engine-chip.bad{color:#dc2626;font-weight:700}.cma-toggle-row{display:flex;align-items:center;padding:2px 0}.cma-toggle{display:flex;align-items:center;gap:8px;cursor:pointer;font-size:12px;font-weight:600;color:var(--text-primary)}.cma-toggle input[type="checkbox"]{width:15px;height:15px;accent-color:var(--brand-navy);cursor:pointer}.cma-toggle-hint{color:var(--text-muted);font-weight:500}.btn-attract{animation:horizon-glow 1.9s ease-in-out infinite;position:relative}.btn-attract::after{content:"";position:absolute;inset:-5px;border-radius:11px;border:2px solid var(--brand-green);opacity:0;animation:horizon-ring 1.9s ease-out infinite;pointer-events:none}@keyframes horizon-glow{0%,100%{box-shadow:0 0 0 0 rgba(5,150,105,.40)}50%{box-shadow:0 0 16px 3px rgba(5,150,105,.55)}}@keyframes horizon-ring{0%{opacity:.9;transform:scale(1)}70%{opacity:0;transform:scale(1.07)}100%{opacity:0}}</style></head>
+<style>.engine-chip.ok{color:var(--brand-green);font-weight:700}.engine-chip.bad{color:#dc2626;font-weight:700}.cma-toggle-row{display:flex;align-items:center;padding:2px 0}.cma-toggle{display:flex;align-items:center;gap:8px;cursor:pointer;font-size:12px;font-weight:600;color:var(--text-primary)}.cma-toggle input[type="checkbox"]{width:15px;height:15px;accent-color:var(--brand-navy);cursor:pointer}.cma-toggle-hint{color:var(--text-muted);font-weight:500}.btn-attract{animation:engine-glow 1.9s ease-in-out infinite;position:relative}.btn-attract::after{content:"";position:absolute;inset:-5px;border-radius:11px;border:2px solid var(--brand-green);opacity:0;animation:engine-ring 1.9s ease-out infinite;pointer-events:none}@keyframes engine-glow{0%,100%{box-shadow:0 0 0 0 rgba(5,150,105,.40)}50%{box-shadow:0 0 16px 3px rgba(5,150,105,.55)}}@keyframes engine-ring{0%{opacity:.9;transform:scale(1)}70%{opacity:0;transform:scale(1.07)}100%{opacity:0}}</style></head>
 <body>
 
 <div class="layout-container" id="app-container">
@@ -401,8 +395,7 @@ td { padding: 10px 12px; vertical-align: middle; white-space: nowrap; }
     <!-- INSTITUTIONAL HEADER -->
     <header class="header-bar">
       <div class="brand-group">
-        <div class="brand-symbol">H</div>
-        <div class="brand-title">HORIZON &bull; Wealth & Lifetime Allocation Engine</div>
+        <div class="brand-title">Wealth &amp; Lifetime Allocation Engine</div>
       </div>
 
       <div class="header-controls">
@@ -610,7 +603,7 @@ td { padding: 10px 12px; vertical-align: middle; white-space: nowrap; }
             <div class="input-affix-wrap"><input type="number" id="inp-pensionStartAge" class="form-input" value="65"><span class="affix suffix">yrs</span></div>
           </div>
           <div class="input-field">
-            <span class="field-label">Plan Horizon (Death Age)</span>
+            <span class="field-label">Plan End (Death Age)</span>
             <div class="input-affix-wrap"><input type="number" id="inp-deathAge" class="form-input" value="95"><span class="affix suffix">yrs</span></div>
           </div>
           <div class="input-field">
@@ -910,7 +903,7 @@ td { padding: 10px 12px; vertical-align: middle; white-space: nowrap; }
 
 "use strict";
 // ===========================================================================
-// HORIZON — WebGPU runtime for the Wealth & Lifetime Allocation Engine.
+// WebGPU runtime for the Wealth & Lifetime Allocation Engine.
 //
 // This script replaces the template's mock dataset with the real engine:
 //  1. It reads the calibrated model payload from the #model-data script tag.
@@ -956,20 +949,20 @@ function f2(value) { return Number(value).toFixed(1); }
 function setText(id, text) { byId(id).textContent = text; }
 
 // ---------------------------------------------------------------------------
-// Console diagnostics: every failure path logs a "HORIZON" line with context,
+// Console diagnostics: every failure path logs an "ENGINE" line with context,
 // and window.dumpDiagnostics() prints a full snapshot for bug reports.
 // ---------------------------------------------------------------------------
-function horizonLog(level, ...args) {
+function engineLog(level, ...args) {
   try {
-    const prefix = "%cHORIZON%c";
+    const prefix = "%cENGINE%c";
     const styles = ["background:#0f172a;color:#fff;border-radius:3px;padding:1px 6px;font-weight:700;", ""];
     console[level](prefix, ...styles, ...args);
   } catch (_) { /* console unavailable */ }
 }
-const logInfo = (...args) => horizonLog("info", ...args);
-const logDebug = (...args) => horizonLog("debug", ...args);
-const logWarn = (...args) => horizonLog("warn", ...args);
-const logError = (...args) => horizonLog("error", ...args);
+const logInfo = (...args) => engineLog("info", ...args);
+const logDebug = (...args) => engineLog("debug", ...args);
+const logWarn = (...args) => engineLog("warn", ...args);
+const logError = (...args) => engineLog("error", ...args);
 
 window.addEventListener("error", (event) => {
   logError("Uncaught error:", event.message, "at", event.filename + ":" + event.lineno,
@@ -982,7 +975,7 @@ window.addEventListener("unhandledrejection", (event) => {
 });
 
 async function dumpDiagnostics() {
-  logInfo("=== HORIZON DIAGNOSTICS ===");
+  logInfo("=== ENGINE DIAGNOSTICS ===");
   logInfo("User agent:", navigator.userAgent);
   logInfo("WebGPU API present:", !!navigator.gpu);
   logInfo("URL:", location.href);
@@ -1007,7 +1000,7 @@ async function dumpDiagnostics() {
       logError("requestAdapterInfo() failed:", err);
     }
   }
-  logInfo("=== END HORIZON DIAGNOSTICS ===");
+  logInfo("=== END ENGINE DIAGNOSTICS ===");
 }
 window.dumpDiagnostics = dumpDiagnostics;
 
@@ -2242,7 +2235,7 @@ async function runSimulation() {
       logError("Run appears hung: no completion after 120s. Dumping diagnostics — check for GPU device-lost entries above.");
       dumpDiagnostics();
       setStatus("Run appears hung (120s). See the console diagnostics.", true);
-      setText("run-message", "The run appears hung. Check the console (F12) for HORIZON diagnostics, or reload the page.");
+      setText("run-message", "The run appears hung. Check the console (F12) for ENGINE diagnostics, or reload the page.");
     }
   }, 120000);
   try {
@@ -2404,7 +2397,7 @@ container.classList.add("settings-open");
 btnToggle.classList.add("active");
 btnLabel.textContent = "Close Settings Window";
 renderTable();
-logInfo("HORIZON initialised: ", TOTAL_ALLOCATIONS, "strategies,", RUN_ALLOCATION_COUNT, "active",
+logInfo("ENGINE initialised: ", TOTAL_ALLOCATIONS, "strategies,", RUN_ALLOCATION_COUNT, "active",
         RUN_ALLOCATION_COUNT !== TOTAL_ALLOCATIONS ? "(?allocations= override)" : "");
 createDeviceContext().catch(error => {
   setStatus(error.message || "WebGPU unavailable", true);

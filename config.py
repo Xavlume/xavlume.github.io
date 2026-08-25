@@ -1,4 +1,4 @@
-"""Single source of truth for every parameter in the Horizon engine.
+"""Single source of truth for every parameter in the engine.
 
 This module holds the strongly-typed configuration for a lifetime asset
 allocation and retirement simulation of a Quebec (Montreal) resident. Every

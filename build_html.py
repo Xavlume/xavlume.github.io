@@ -1,4 +1,4 @@
-"""Build the standalone GitHub Pages HTML for the Horizon engine.
+"""Build the standalone GitHub Pages HTML for the lifetime allocation engine.
 
 The builder reads the institutional light-mode UI foundation
 (``template_readonly.html``), replaces its mock dataset script with the full
@@ -41,7 +41,7 @@ QUANTILES_MARKER = "__QUANTILES_JSON__"
 RUNTIME_JS = r"""
 "use strict";
 // ===========================================================================
-// HORIZON — WebGPU runtime for the Wealth & Lifetime Allocation Engine.
+// WebGPU runtime for the Wealth & Lifetime Allocation Engine.
 //
 // This script replaces the template's mock dataset with the real engine:
 //  1. It reads the calibrated model payload from the #model-data script tag.
@@ -87,20 +87,20 @@ function f2(value) { return Number(value).toFixed(1); }
 function setText(id, text) { byId(id).textContent = text; }
 
 // ---------------------------------------------------------------------------
-// Console diagnostics: every failure path logs a "HORIZON" line with context,
+// Console diagnostics: every failure path logs an "ENGINE" line with context,
 // and window.dumpDiagnostics() prints a full snapshot for bug reports.
 // ---------------------------------------------------------------------------
-function horizonLog(level, ...args) {
+function engineLog(level, ...args) {
   try {
-    const prefix = "%cHORIZON%c";
+    const prefix = "%cENGINE%c";
     const styles = ["background:#0f172a;color:#fff;border-radius:3px;padding:1px 6px;font-weight:700;", ""];
     console[level](prefix, ...styles, ...args);
   } catch (_) { /* console unavailable */ }
 }
-const logInfo = (...args) => horizonLog("info", ...args);
-const logDebug = (...args) => horizonLog("debug", ...args);
-const logWarn = (...args) => horizonLog("warn", ...args);
-const logError = (...args) => horizonLog("error", ...args);
+const logInfo = (...args) => engineLog("info", ...args);
+const logDebug = (...args) => engineLog("debug", ...args);
+const logWarn = (...args) => engineLog("warn", ...args);
+const logError = (...args) => engineLog("error", ...args);
 
 window.addEventListener("error", (event) => {
   logError("Uncaught error:", event.message, "at", event.filename + ":" + event.lineno,
@@ -113,7 +113,7 @@ window.addEventListener("unhandledrejection", (event) => {
 });
 
 async function dumpDiagnostics() {
-  logInfo("=== HORIZON DIAGNOSTICS ===");
+  logInfo("=== ENGINE DIAGNOSTICS ===");
   logInfo("User agent:", navigator.userAgent);
   logInfo("WebGPU API present:", !!navigator.gpu);
   logInfo("URL:", location.href);
@@ -138,7 +138,7 @@ async function dumpDiagnostics() {
       logError("requestAdapterInfo() failed:", err);
     }
   }
-  logInfo("=== END HORIZON DIAGNOSTICS ===");
+  logInfo("=== END ENGINE DIAGNOSTICS ===");
 }
 window.dumpDiagnostics = dumpDiagnostics;
 
@@ -1373,7 +1373,7 @@ async function runSimulation() {
       logError("Run appears hung: no completion after 120s. Dumping diagnostics — check for GPU device-lost entries above.");
       dumpDiagnostics();
       setStatus("Run appears hung (120s). See the console diagnostics.", true);
-      setText("run-message", "The run appears hung. Check the console (F12) for HORIZON diagnostics, or reload the page.");
+      setText("run-message", "The run appears hung. Check the console (F12) for ENGINE diagnostics, or reload the page.");
     }
   }, 120000);
   try {
@@ -1535,7 +1535,7 @@ container.classList.add("settings-open");
 btnToggle.classList.add("active");
 btnLabel.textContent = "Close Settings Window";
 renderTable();
-logInfo("HORIZON initialised: ", TOTAL_ALLOCATIONS, "strategies,", RUN_ALLOCATION_COUNT, "active",
+logInfo("ENGINE initialised: ", TOTAL_ALLOCATIONS, "strategies,", RUN_ALLOCATION_COUNT, "active",
         RUN_ALLOCATION_COUNT !== TOTAL_ALLOCATIONS ? "(?allocations= override)" : "");
 createDeviceContext().catch(error => {
   setStatus(error.message || "WebGPU unavailable", true);
@@ -1579,10 +1579,10 @@ def _inject_status_strip(html: str, payload: dict) -> str:
         ".cma-toggle{display:flex;align-items:center;gap:8px;cursor:pointer;font-size:12px;font-weight:600;color:var(--text-primary)}"
         '.cma-toggle input[type="checkbox"]{width:15px;height:15px;accent-color:var(--brand-navy);cursor:pointer}'
         ".cma-toggle-hint{color:var(--text-muted);font-weight:500}"
-        ".btn-attract{animation:horizon-glow 1.9s ease-in-out infinite;position:relative}"
-        ".btn-attract::after{content:\"\";position:absolute;inset:-5px;border-radius:11px;border:2px solid var(--brand-green);opacity:0;animation:horizon-ring 1.9s ease-out infinite;pointer-events:none}"
-        "@keyframes horizon-glow{0%,100%{box-shadow:0 0 0 0 rgba(5,150,105,.40)}50%{box-shadow:0 0 16px 3px rgba(5,150,105,.55)}}"
-        "@keyframes horizon-ring{0%{opacity:.9;transform:scale(1)}70%{opacity:0;transform:scale(1.07)}100%{opacity:0}}</style></head>",
+        ".btn-attract{animation:engine-glow 1.9s ease-in-out infinite;position:relative}"
+        ".btn-attract::after{content:\"\";position:absolute;inset:-5px;border-radius:11px;border:2px solid var(--brand-green);opacity:0;animation:engine-ring 1.9s ease-out infinite;pointer-events:none}"
+        "@keyframes engine-glow{0%,100%{box-shadow:0 0 0 0 rgba(5,150,105,.40)}50%{box-shadow:0 0 16px 3px rgba(5,150,105,.55)}}"
+        "@keyframes engine-ring{0%{opacity:.9;transform:scale(1)}70%{opacity:0;transform:scale(1.07)}100%{opacity:0}}</style></head>",
         1,
     )
     return html
