@@ -584,9 +584,9 @@ function buildDynamicModel(config) {
 // ---------------------------------------------------------------------------
 // WebGPU pipeline
 // ---------------------------------------------------------------------------
-function makeParams(dynamic, simulations, allocations, batchSims, simOffset) {
+function makeParams(dynamic, simulations, allocations, batchSims, simOffset, columnsPerWorkgroup = 1) {
   const dimensions = dynamic.constants;
-  const buffer = new ArrayBuffer(128);
+  const buffer = new ArrayBuffer(144);
   new Uint32Array(buffer, 0, 4).set([simulations, allocations, dimensions.totalMonths, dimensions.accumMonths]);
   new Uint32Array(buffer, 16, 4).set([dimensions.retireMonths, RETURN_FUND_COUNT, dimensions.bisectionSteps, dimensions.m75Start]);
   new Uint32Array(buffer, 32, 4).set([dimensions.postWedgeMonth, dimensions.currentAge, dimensions.careerStartAge, dimensions.retirementAge]);
@@ -595,6 +595,7 @@ function makeParams(dynamic, simulations, allocations, batchSims, simOffset) {
   new Float32Array(buffer, 80, 4).set([dimensions.oasClawbackRate, dimensions.employerMatchRate, dimensions.employerMatchPercent, dimensions.funds.length]);
   new Uint32Array(buffer, 96, 4).set([dimensions.seed, dimensions.skewDegreesFreedom, batchSims, simOffset]);
   new Float32Array(buffer, 112, 4).set([dimensions.realBorrowRateAnnual / 12, dimensions.extraMer15 / 12, dimensions.extraMer20 / 12, dimensions.layoffAnnualProbability]);
+  new Uint32Array(buffer, 128, 4).set([columnsPerWorkgroup, 0, 0, 0]);
   return buffer;
 }
 
@@ -766,8 +767,19 @@ async function simulate(settings, run) {
   const device = context.device;
   const batchSize = DEFAULTS.batchSize;
   const allocationCount = RUN_ALLOCATION_COUNT;
+  // Dispatch shaping (always on): each solve/track_drawdowns workgroup walks
+  // `columnsPerWorkgroup` allocation columns, letting the dispatch grid
+  // shrink to 1/columnsPerWorkgroup of its size WITHOUT splitting into
+  // multiple dispatches. A single dispatch keeps per-command runtime low
+  // enough to dodge the Windows TDR hang detector on GPUs without
+  // mid-dispatch compute preemption (e.g. Maxwell) while staying safe on AMD
+  // D3D12 drivers that silently drop writes from dispatches after the first.
+  // The shaders mirror the stride math, so results are byte-identical.
+  const columnsPerWorkgroup = Math.max(1, DEFAULTS.columnsPerWorkgroup | 0);
+  const dispatchAllocations = Math.max(1, Math.ceil(allocationCount / columnsPerWorkgroup));
   const totalSims = settings.simulations;
   logInfo("Simulation start:", {simulations: totalSims, allocations: allocationCount, batchSize,
+          columnsPerWorkgroup, dispatchAllocations,
           totalMonths: dynamic.constants.totalMonths, careerYears: dynamic.constants.careerYears,
           pathCount: dynamic.constants.funds.length, houseCount: C.houseCount,
           retirementAge: settings.model.retirementAge, pensionStartAge: settings.model.pensionStartAge});
@@ -820,10 +832,10 @@ async function simulate(settings, run) {
       const count = Math.min(batchSize, totalSims - offset);
       const batchStarted = performance.now();
       logDebug("Batch", (batchNumber + 1) + "/" + totalBatches, "sims", offset, "..", offset + count - 1);
-      const params = device.createBuffer({size: 128, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST});
-      device.queue.writeBuffer(params, 0, makeParams(dynamic, totalSims, allocationCount, count, offset));
+      const params = device.createBuffer({size: 144, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST});
+      device.queue.writeBuffer(params, 0, makeParams(dynamic, totalSims, allocationCount, count, offset, columnsPerWorkgroup));
       const bindGroup = device.createBindGroup({layout: context.layout, entries: [params, ...batchBindings].map((buffer, binding) => ({binding, resource: {buffer}}))});
-      const encoder = device.createCommandEncoder();
+      let encoder = device.createCommandEncoder();
       let pass = encoder.beginComputePass();
       pass.setPipeline(context.generateReturns); pass.setBindGroup(0, bindGroup);
       pass.dispatchWorkgroups(Math.ceil(count * totalMonths / 64), 1, 1); pass.end();
@@ -833,12 +845,14 @@ async function simulate(settings, run) {
       pass = encoder.beginComputePass();
       pass.setPipeline(context.accumulate); pass.setBindGroup(0, bindGroup);
       pass.dispatchWorkgroups(Math.ceil(count / 64), pathCount * houseCount, 1); pass.end();
+      // solve and track_drawdowns cover all allocations via the shader-side
+      // k-loop (params.dispatch.x = columnsPerWorkgroup); one dispatch each.
       pass = encoder.beginComputePass();
       pass.setPipeline(context.solve); pass.setBindGroup(0, bindGroup);
-      pass.dispatchWorkgroups(Math.ceil(count / 64), allocationCount, 1); pass.end();
+      pass.dispatchWorkgroups(Math.ceil(count / 64), dispatchAllocations, 1); pass.end();
       pass = encoder.beginComputePass();
       pass.setPipeline(context.trackDrawdowns); pass.setBindGroup(0, bindGroup);
-      pass.dispatchWorkgroups(Math.ceil(count / 64), allocationCount, 1); pass.end();
+      pass.dispatchWorkgroups(Math.ceil(count / 64), dispatchAllocations, 1); pass.end();
       const batchDrawdownOffset = count * totalMonths * RETURN_FUND_COUNT + count * careerYears + houseCount * pathCount * count * 4 + houseCount * count * 2;
       encoder.copyBufferToBuffer(scratchBuffer, batchDrawdownOffset * 4, drawdownReadback, offset * allocationCount * 4, count * allocationCount * 4);
       const batchHouseOffset = count * totalMonths * RETURN_FUND_COUNT + count * careerYears + houseCount * pathCount * count * 4;
@@ -864,8 +878,8 @@ async function simulate(settings, run) {
     if (run.cancelled) throw new Error("__CANCELLED__");
     setProgress(95, 100, "Computing quantiles on GPU...");
     logDebug("Quantile reduction: dispatching", allocationCount, "workgroups over", totalSims, "paths each");
-    const quantileParams = device.createBuffer({size: 128, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST});
-    device.queue.writeBuffer(quantileParams, 0, makeParams(dynamic, totalSims, allocationCount, totalSims, 0));
+    const quantileParams = device.createBuffer({size: 144, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST});
+    device.queue.writeBuffer(quantileParams, 0, makeParams(dynamic, totalSims, allocationCount, totalSims, 0, 1));
     const quantileBindGroup = device.createBindGroup({layout: context.quantileLayout, entries: [quantileParams, spendingBuffer, quantileBuffer].map((buffer, binding) => ({binding, resource: {buffer}}))});
     const encoder = device.createCommandEncoder();
     let pass = encoder.beginComputePass();

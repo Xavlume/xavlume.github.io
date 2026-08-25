@@ -180,21 +180,31 @@ fn test_solvency(w: f32, simulation: u32, allocation: u32) -> bool {
 @compute @workgroup_size(64, 1, 1)
 fn solve(@builtin(global_invocation_id) gid: vec3<u32>) {
     let simulation = gid.x;
-    let allocation = gid.y;
-    if (simulation >= params.generate.z || allocation >= params.dimensions.y) {
+    if (simulation >= params.generate.z) {
         return;
     }
-
-    var low = 300.0;
-    var high = 10000000.0;
-    for (var step = 0u; step < params.solver.z; step += 1u) {
-        let middle = (low + high) * 0.5;
-        if (test_solvency(middle, simulation, allocation)) {
-            low = middle;
-        } else {
-            high = middle;
+    // Compatibility mode: one thread walks `dispatch.x` allocation columns
+    // (stride = dispatch_y) so the runtime can shrink the dispatch grid
+    // without splitting it into multiple dispatches (which some AMD D3D12
+    // drivers silently corrupt). dispatch.x = 1 reproduces the original
+    // one-column-per-thread behavior.
+    let columns = max(1u, params.dispatch.x);
+    let dispatch_y = max(1u, (params.dimensions.y + columns - 1u) / columns);
+    for (var k = 0u; k < columns; k += 1u) {
+        let allocation = gid.y + k * dispatch_y;
+        if (allocation >= params.dimensions.y) {
+            break;
         }
+        var low = 300.0;
+        var high = 10000000.0;
+        for (var step = 0u; step < params.solver.z; step += 1u) {
+            let middle = (low + high) * 0.5;
+            if (test_solvency(middle, simulation, allocation)) {
+                low = middle;
+            } else {
+                high = middle;
+            }
+        }
+        spending_results[allocation * params.dimensions.x + params.generate.w + simulation] = (low + high) * 0.5;
     }
-
-    spending_results[allocation * params.dimensions.x + params.generate.w + simulation] = (low + high) * 0.5;
 }

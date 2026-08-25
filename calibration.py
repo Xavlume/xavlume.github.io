@@ -947,6 +947,7 @@ def build_payload(price_path, config=None) -> Dict[str, object]:
     defaults = {
         "simulations": config["simulation"].simulations,
         "batchSize": config["simulation"].batch_size,
+        "columnsPerWorkgroup": config["simulation"].columns_per_workgroup,
         "gamma": config["simulation"].gamma,
         "floorPercentile": config["simulation"].floor_percentile,
         "targetSpending": config["simulation"].target_spending_monthly,

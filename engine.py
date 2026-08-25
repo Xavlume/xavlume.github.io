@@ -82,8 +82,9 @@ def make_params(
     batch_sims: int,
     sim_offset: int,
     seed: int = SEED,
+    columns_per_workgroup: int = 1,
 ) -> bytes:
-    """Build the 128-byte params buffer; layout identical to the browser's makeParams."""
+    """Build the 144-byte params buffer; layout identical to the browser's makeParams."""
     lc = config["lifecycle"]
     tax = config["tax"]
     cma = config["cma"]
@@ -94,7 +95,7 @@ def make_params(
     m75_start = int((75 - lc.retirement_age) * 12)
     post_wedge_month = int((lc.pension_start_age - lc.retirement_age) * 12)
 
-    params = np.zeros(128, dtype=np.uint8)
+    params = np.zeros(144, dtype=np.uint8)
     u32 = params.view(np.uint32)
     f32 = params.view(np.float32)
 
@@ -126,6 +127,7 @@ def make_params(
         cma.extra_mer_20 / 12.0,
         co.layoff_annual_probability,
     ]
+    u32[32:36] = [columns_per_workgroup, 0, 0, 0]
     return params.tobytes()
 
 
@@ -273,8 +275,14 @@ class Engine:
         self,
         simulations: int,
         allocation_indices: Optional[List[int]] = None,
+        columns_per_workgroup: int = 1,
     ) -> SimulationResult:
-        """Run the complete on-chip pipeline for the requested strategies."""
+        """Run the complete on-chip pipeline for the requested strategies.
+
+        columns_per_workgroup mirrors the deployed page's dispatch shaping
+        (default 1 = the reference one-column-per-thread shape); results are
+        byte-identical for any value.
+        """
         if simulations < 1:
             raise ValueError("simulations must be positive")
         wgpu = self.wgpu
@@ -286,6 +294,12 @@ class Engine:
 
         metadata, names = calibration.allocation_metadata(self.config, allocation_indices)
         n_allocations = len(names)
+        # The params buffer carries columns_per_workgroup (1 by default - the
+        # reference shape): solve/track_drawdowns run that many allocation
+        # columns per thread, exactly like the browser's dispatch.
+        # The deployed page always uses the config's columns_per_workgroup
+        # (default 64) so each single dispatch stays under the Windows TDR
+        # watchdog; the stride loop produces byte-identical results.
         model_values = calibration.build_model_buffer(self.config, self.price_path)
 
         storage_usage = wgpu.BufferUsage.STORAGE
@@ -323,7 +337,7 @@ class Engine:
             count = min(self.batch_size, simulations - offset)
             params = self._buffer(
                 np.frombuffer(
-                    make_params(self.config, simulations, n_allocations, count, offset, seed=self.seed),
+                    make_params(self.config, simulations, n_allocations, count, offset, seed=self.seed, columns_per_workgroup=columns_per_workgroup),
                     dtype=np.uint8,
                 ),
                 storage_usage,

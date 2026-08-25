@@ -160,7 +160,7 @@ wealth, so planned decumulation cannot masquerade as a drawdown), with
 * **Structured buffer contracts.** Every WGSL storage-buffer region is
   declared and documented in `shaders/common.wgsl` (and
   `shaders/quantiles.wgsl`); there are no undocumented magic offsets. The
-  128-byte params buffer is byte-identical between the Python runner and the
+  144-byte params buffer is byte-identical between the Python runner and the
   browser's `makeParams`.
 * **No parameter duplication.** The old engine hardcoded defaults across four
   files and raw WGSL offsets; this tree defines each number once.

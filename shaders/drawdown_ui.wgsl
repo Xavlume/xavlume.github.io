@@ -234,13 +234,22 @@ fn drawdown_ui(w: f32, simulation: u32, allocation: u32) -> vec4<f32> {
 @compute @workgroup_size(64, 1, 1)
 fn track_drawdowns(@builtin(global_invocation_id) gid: vec3<u32>) {
     let simulation = gid.x;
-    let allocation = gid.y;
-    if (simulation >= params.generate.z || allocation >= params.dimensions.y) {
+    if (simulation >= params.generate.z) {
         return;
     }
-    let global_sim = params.generate.w + simulation;
-    let w = spending_results[allocation * params.dimensions.x + global_sim];
-    let ui = drawdown_ui(w, simulation, allocation);
-    let out_index = drawdown_region_offset() + simulation * params.dimensions.y + allocation;
-    scratch[out_index] = ui.w;
+    // Compatibility mode: mirror of solve(); see solver.wgsl. dispatch.x = 1
+    // reproduces the original one-column-per-thread behavior.
+    let columns = max(1u, params.dispatch.x);
+    let dispatch_y = max(1u, (params.dimensions.y + columns - 1u) / columns);
+    for (var k = 0u; k < columns; k += 1u) {
+        let allocation = gid.y + k * dispatch_y;
+        if (allocation >= params.dimensions.y) {
+            break;
+        }
+        let global_sim = params.generate.w + simulation;
+        let w = spending_results[allocation * params.dimensions.x + global_sim];
+        let ui = drawdown_ui(w, simulation, allocation);
+        let out_index = drawdown_region_offset() + simulation * params.dimensions.y + allocation;
+        scratch[out_index] = ui.w;
+    }
 }

@@ -160,6 +160,7 @@ class SimulationConfig:
 
     simulations: int = 1_000
     batch_size: int = 1_024
+    columns_per_workgroup: int = 128
     gamma: float = 3.0
     floor_percentile: int = 10
     target_spending_monthly: float = 3_500.0

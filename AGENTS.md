@@ -247,7 +247,7 @@ Passes and dispatch:
 
 ### 6.2 Bindings (main module)
 
-- `0` params (read) — the **128-byte params buffer**
+- `0` params (read) — the **144-byte params buffer**
 - `1` scratch (**read-write**) — packed regions: returns, layoffs, 35 states,
   house outcomes, drawdown scores (offsets computed in `common.wgsl`)
 - `2` allocations metadata (read) — 12 u32 per strategy
@@ -260,11 +260,19 @@ silently drops writes beyond **two read-write storage buffers per stage** —
 hence the scratch-packing design and why only bindings 1 and 6 are read-write.
 Do not add a third read-write binding.
 
-### 6.3 The 128-byte params buffer
+### 6.3 The 144-byte params buffer
 
-Layout is 8 × `vec4` (`dimensions`, `solver`, `calendar`, `constants0-2`,
-`generate`, `generate1`) — documented field-by-field in `common.wgsl`'s
-`Params`. There are **three synchronized implementations**:
+Layout is 9 × `vec4` (`dimensions`, `solver`, `calendar`, `constants0-2`,
+`generate`, `generate1`, `dispatch`) — documented field-by-field in
+`common.wgsl`'s `Params`. The `dispatch.x` field is the
+allocation-columns-per-workgroup count from
+`SimulationConfig.columns_per_workgroup` (64 by default in the deployed page,
+1 in the Python engine): `solve`/`track_drawdowns` loop over that many
+allocation columns per thread so the dispatch grid shrinks without ever
+splitting into multiple dispatches (splitting silently corrupts results on
+some AMD D3D12 drivers, and single large dispatches trip the Windows TDR
+hang detector on GPUs without mid-dispatch compute preemption). There are
+**three synchronized implementations**:
 
 - `engine.make_params` (Python, `engine.py`)
 - `makeParams` (`RUNTIME_JS` in `build_html.py`)

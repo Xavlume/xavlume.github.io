@@ -12,7 +12,7 @@
 // quantiles.wgsl is a separate, self-contained module (its own Params and
 // bindings) because it runs as an independent reduced pipeline.
 //
-// The Params struct is a 128-byte uniform packed exactly like the JS
+// The Params struct is a 144-byte uniform packed exactly like the JS
 // makeParams() and Python _make_params(). The storage-buffer memory layout is
 // documented here so no magic integer offset lives inside a compute entry.
 
@@ -25,6 +25,7 @@ struct Params {
     constants2: vec4<f32>,   // OAS clawback rate, employer match rate, match percent, accumulation path count
     generate: vec4<u32>,     // PRNG seed, skew-t df, batch simulation count, batch offset
     generate1: vec4<f32>,    // real borrowing rate/12, extra MER 1.5/12, extra MER 2.0/12, layoff probability
+    dispatch: vec4<u32>,     // allocation columns per workgroup (compat slicing); 1 = one column per thread
 };
 
 @group(0) @binding(0) var<storage, read> params: Params;
