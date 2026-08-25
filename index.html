@@ -2306,7 +2306,7 @@ byId("btn-update-table").addEventListener("click", () => {
     setText("run-message", "Run a simulation first — there are no results to update.");
     return;
   }
-  renderTable();
+  renderTable(true);
 });
 byId("btn-reset-defaults").addEventListener("click", resetDefaults);
 

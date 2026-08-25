@@ -246,6 +246,8 @@ def main() -> int:
         )
         elapsed = click_update(driver)
         after = rows_snapshot(driver)
+        sel = driver.execute_script("return activeStrategy ? activeStrategy.name : null;")
+        check("Update Table auto-selects the new top strategy", sel == after[0]["name"], f"'{sel}'")
         timing_after = driver.execute_script("return byId('timing-meta').textContent;")
 
         formula_ok = driver.execute_script(
