@@ -72,7 +72,7 @@ const state = {
   results: null,        // per-strategy simulation results (quantiles, ui, ...)
   dynamic: null,        // built dynamic model of the last run
   applied: null,        // control snapshot used for the last render
-  sort: { column: "ce", ascending: false },
+  sort: { column: "ce", ascending: false, active: false },
   deviceContext: null,
   devicePromise: null,
   activeRun: null,
@@ -1056,14 +1056,53 @@ function displayedRows() {
   const search = applied.search;
   if (search) rows = rows.filter(row => row.name.toUpperCase().includes(search));
 
-  const column = state.sort.column;
-  const direction = state.sort.ascending ? 1 : -1;
-  rows.sort((a, b) => {
-    const left = a[column] == null ? -1 : a[column];
-    const right = b[column] == null ? -1 : b[column];
-    return (left - right) * direction;
-  });
+  // Default view is the CE leaderboard (rank 1 = highest CE). A column sort
+  // (state.sort.active) re-orders the visible sub-table: descending first,
+  // then ascending, then back to the CE default. Missing values (renter buy
+  // age / mortgage) always sink to the bottom, and ties fall back to the CE
+  // rank so the ordering stays deterministic.
+  const sort = state.sort;
+  if (sort.active) {
+    const column = sort.column;
+    const direction = sort.ascending ? 1 : -1;
+    const numeric = typeof rows[0][column] === "number";
+    rows.sort((a, b) => {
+      const left = a[column], right = b[column];
+      if (left == null && right == null) return 0;
+      if (left == null) return 1;
+      if (right == null) return -1;
+      const cmp = numeric ? left - right : left < right ? -1 : left > right ? 1 : 0;
+      return cmp * direction || b.ce - a.ce;
+    });
+  } else {
+    rows.sort((a, b) => b.ce - a.ce);
+  }
   return rows;
+}
+
+// Column-sort cycle: click a header to sort that column biggest -> smallest,
+// click it again for smallest -> biggest, click a third time to return to the
+// default CE leaderboard. Works on whatever rows the current filters show.
+function cycleSort(column) {
+  if (state.sort.active && state.sort.column === column) {
+    if (state.sort.ascending) {
+      state.sort = { column: "ce", ascending: false, active: false };
+    } else {
+      state.sort = { column, ascending: true, active: true };
+    }
+  } else {
+    state.sort = { column, ascending: false, active: true };
+  }
+  updateSortIndicators();
+  renderTable(true);
+}
+
+function updateSortIndicators() {
+  document.querySelectorAll("th.sortable[data-sorted]").forEach(th => th.removeAttribute("data-sorted"));
+  if (state.sort.active) {
+    const th = document.querySelector('th.sortable[data-col="' + state.sort.column + '"]');
+    if (th) th.setAttribute("data-sorted", state.sort.ascending ? "asc" : "desc");
+  }
 }
 
 // Two-tone split chips: a saturated color slug (allocation/ratio) + white label.
@@ -1097,6 +1136,7 @@ function renderHouseBadge(house) {
 
 function renderTable(selectTop) {
   state.applied = captureAppliedControls();
+  updateSortIndicators();
   const rows = displayedRows();
   const body = byId("table-body");
   const pill = document.querySelector('#seg-mix .seg-pill[data-mix="ALL"]');
@@ -1387,6 +1427,8 @@ function resetDefaults() {
   byId("filter-accum").value = "ALL";
   byId("table-search").value = "";
   document.querySelectorAll("#seg-mix .seg-pill").forEach(btn => btn.classList.toggle("active", btn.dataset.mix === "ALL"));
+  state.sort = { column: "ce", ascending: false, active: false };
+  updateSortIndicators();
   updateGammaLabel();
   setText("val-lambda", "0.000 (Neutral)");
   setText("val-sim-count", DEFAULTS.simulations.toLocaleString("en-US") + " Paths");
@@ -1429,6 +1471,12 @@ document.querySelectorAll("#seg-mix .seg-pill").forEach(btn => {
     btn.classList.add("active");
     renderTable(true);
   });
+});
+
+// Column headers: click cycles biggest -> smallest -> smallest -> biggest ->
+// default CE / rank order, applied to the currently filtered rows.
+document.querySelectorAll("th.sortable").forEach(th => {
+  th.addEventListener("click", () => cycleSort(th.dataset.col));
 });
 
 // Settings dock window toggle + category navigation (from the template).

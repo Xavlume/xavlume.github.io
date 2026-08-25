@@ -240,6 +240,10 @@ th {
   font-family: var(--font-mono);
 }
 th:hover { color: var(--text-primary); }
+th.sortable[data-sorted] { color: var(--brand-navy); }
+th.sortable[data-sorted]::after { font-size: 8px; opacity: 0.9; margin-left: 4px; }
+th.sortable[data-sorted="desc"]::after { content: "\25BC"; }
+th.sortable[data-sorted="asc"]::after { content: "\25B2"; }
 th.right, td.right { text-align: right; }
 tbody tr { border-bottom: 1px solid var(--border-subtle); cursor: pointer; transition: background 0.1s; }
 tbody tr:hover { background: #f8fafc; }
@@ -526,17 +530,17 @@ td { padding: 10px 12px; vertical-align: middle; white-space: nowrap; }
           <thead>
             <tr>
               <th style="width:50px">Rank</th>
-              <th>Housing Strategy</th>
-              <th id="th-accum">Accumulation (25–55)</th>
-              <th id="th-bridge">Early Bridge (55–65)</th>
-              <th id="th-post">Post-65</th>
-              <th class="right">Average Buy Age</th>
-              <th class="right">Average Mortgage</th>
-              <th class="right" style="color:var(--brand-green)">Certainty Equivalent</th>
-              <th class="right">Median</th>
-              <th class="right">Ulcer Index</th>
-              <th class="right" style="color:var(--brand-amber)">P10</th>
-              <th class="right">P90</th>
+              <th class="sortable" data-col="house">Housing Strategy</th>
+              <th class="sortable" id="th-accum" data-col="accum">Accumulation (25–55)</th>
+              <th class="sortable" id="th-bridge" data-col="bridge">Early Bridge (55–65)</th>
+              <th class="sortable" id="th-post" data-col="post">Post-65</th>
+              <th class="right sortable" data-col="buyAge">Average Buy Age</th>
+              <th class="right sortable" data-col="mortgage">Average Mortgage</th>
+              <th class="right sortable" style="color:var(--brand-green)" data-col="ce">Certainty Equivalent</th>
+              <th class="right sortable" data-col="median">Median</th>
+              <th class="right sortable" data-col="ui">Ulcer Index</th>
+              <th class="right sortable" style="color:var(--brand-amber)" data-col="floor">P10</th>
+              <th class="right sortable" data-col="p90">P90</th>
             </tr>
           </thead>
           <tbody id="table-body">
