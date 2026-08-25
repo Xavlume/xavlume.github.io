@@ -659,6 +659,10 @@ td { padding: 10px 12px; vertical-align: middle; white-space: nowrap; }
             <div class="input-affix-wrap"><input type="number" step="0.1" class="form-input" value="2.0"><span class="affix suffix">% / yr</span></div>
           </div>
           <div class="input-field">
+            <span class="field-label">Max House Savings Fraction (Cap)</span>
+            <div class="input-affix-wrap"><input type="number" step="1" class="form-input" value="10.0"><span class="affix suffix">% net</span></div>
+          </div>
+          <div class="input-field">
             <span class="field-label">FHSA Annual Contribution</span>
             <div class="input-affix-wrap"><span class="affix prefix">$</span><input type="text" class="form-input" value="8,000"><span class="affix suffix">/ yr</span></div>
           </div>
@@ -901,6 +905,62 @@ function escapeHtml(value) { return String(value).replace(/[&<>"']/g, ch => ({"&
 function f2(value) { return Number(value).toFixed(1); }
 function setText(id, text) { byId(id).textContent = text; }
 
+// ---------------------------------------------------------------------------
+// Console diagnostics: every failure path logs a "HORIZON" line with context,
+// and window.dumpDiagnostics() prints a full snapshot for bug reports.
+// ---------------------------------------------------------------------------
+function horizonLog(level, ...args) {
+  try {
+    const prefix = "%cHORIZON%c";
+    const styles = ["background:#0f172a;color:#fff;border-radius:3px;padding:1px 6px;font-weight:700;", ""];
+    console[level](prefix, ...styles, ...args);
+  } catch (_) { /* console unavailable */ }
+}
+const logInfo = (...args) => horizonLog("info", ...args);
+const logDebug = (...args) => horizonLog("debug", ...args);
+const logWarn = (...args) => horizonLog("warn", ...args);
+const logError = (...args) => horizonLog("error", ...args);
+
+window.addEventListener("error", (event) => {
+  logError("Uncaught error:", event.message, "at", event.filename + ":" + event.lineno,
+           event.error && event.error.stack ? "\n" + event.error.stack : "");
+});
+window.addEventListener("unhandledrejection", (event) => {
+  const reason = event.reason || {};
+  logError("Unhandled promise rejection:", reason && reason.message ? reason.message : String(reason),
+           reason && reason.stack ? "\n" + reason.stack : "");
+});
+
+async function dumpDiagnostics() {
+  logInfo("=== HORIZON DIAGNOSTICS ===");
+  logInfo("User agent:", navigator.userAgent);
+  logInfo("WebGPU API present:", !!navigator.gpu);
+  logInfo("URL:", location.href);
+  logInfo("State:", JSON.stringify({
+    results: state.results ? state.results.length : null,
+    deviceReady: !!state.deviceContext,
+    adapterText: state.adapterText,
+    activeRun: !!state.activeRun,
+    deviceLostReason: state.deviceLostReason || null,
+    totals: {allocations: TOTAL_ALLOCATIONS, runAllocations: RUN_ALLOCATION_COUNT}
+  }));
+  if (navigator.gpu) {
+    try {
+      if (typeof navigator.gpu.requestAdapterInfo === "function") {
+        const infos = await navigator.gpu.requestAdapterInfo();
+        logInfo("Available adapters (" + infos.length + "):",
+                infos.map(i => ({vendor: i.vendor, architecture: i.architecture, device: i.device, description: i.description})));
+      } else {
+        logWarn("navigator.gpu.requestAdapterInfo() not available on this browser version; adapter enumeration skipped.");
+      }
+    } catch (err) {
+      logError("requestAdapterInfo() failed:", err);
+    }
+  }
+  logInfo("=== END HORIZON DIAGNOSTICS ===");
+}
+window.dumpDiagnostics = dumpDiagnostics;
+
 function uiSeverity(ui) {
   // Severity coloring for the mean Composite Ulcer Index: green = mild
   // (VBAL/VGRO), amber = moderate (100% equity), red = severe (leveraged).
@@ -966,10 +1026,11 @@ const INPUT_SCHEMA = [
   ["tab-re", 5, "monthlyMarketRent", "money"],
   ["tab-re", 6, "houseSavingsStartAnnual", "money"],
   ["tab-re", 7, "houseSavingsEscalationRate", "pct"],
-  ["tab-re", 8, "fhsaAnnualLimit", "money"],
-  ["tab-re", 9, "fhsaMaxBalance", "money"],
-  ["tab-re", 10, "hbpMaxWithdrawal", "money"],
-  ["tab-re", 11, "hbpRepaymentYears", "years"],
+  ["tab-re", 8, "houseSavingsMaxFraction", "pct"],
+  ["tab-re", 9, "fhsaAnnualLimit", "money"],
+  ["tab-re", 10, "fhsaMaxBalance", "money"],
+  ["tab-re", 11, "hbpMaxWithdrawal", "money"],
+  ["tab-re", 12, "hbpRepaymentYears", "years"],
 
   ["tab-tax", 0, "meltdownBracketAnnual", "money"],
   ["tab-tax", 1, "oasClawbackThreshold", "money"],
@@ -1028,8 +1089,8 @@ function parseForKind(kind, text) {
 
 function applyModelToInputs(config) {
   const inputs = schemaInputs();
-  INPUT_SCHEMA.forEach(([tabId, index, field, kind]) => {
-    const element = inputs[tabId + ":" + index];
+  INPUT_SCHEMA.forEach(([tabId, inputIndex, field, kind]) => {
+    const element = inputs[tabId + ":" + inputIndex];
     if (!element) return;
     element.value = formatForKind(kind, modelValue(config, field));
   });
@@ -1048,8 +1109,10 @@ function readModelInputs() {
   const input = JSON.parse(JSON.stringify(MODEL.inputs));
   const inputs = schemaInputs();
   for (let index = 0; index < INPUT_SCHEMA.length; index++) {
-    const [tabId, , field, kind] = INPUT_SCHEMA[index];
-    const element = inputs[tabId + ":" + index];
+    // NOTE: the schema stores the per-tab input index separately from the
+    // global schema position — the lookup key MUST use the input index.
+    const [tabId, inputIndex, field, kind] = INPUT_SCHEMA[index];
+    const element = inputs[tabId + ":" + inputIndex];
     if (!element) continue;
     const value = parseForKind(kind, element.value);
     if (!Number.isFinite(value)) throw new Error("Invalid number in settings field " + field + ": '" + element.value + "'");
@@ -1365,26 +1428,81 @@ async function createDeviceContext() {
   if (state.deviceContext) return state.deviceContext;
   if (state.devicePromise) return state.devicePromise;
   const promise = (async () => {
-    if (!navigator.gpu) throw new Error("WebGPU is unavailable. Use a current Chrome or Edge browser with WebGPU enabled.");
-    const adapter = await navigator.gpu.requestAdapter();
-    if (!adapter) throw new Error("No WebGPU adapter found.");
+    if (!navigator.gpu) {
+      const message = "WebGPU is unavailable in this browser. Use a current Chrome or Edge (113+) with hardware acceleration enabled (chrome://settings/system), or launch with --enable-unsafe-webgpu.";
+      logError(message);
+      await dumpDiagnostics();
+      throw new Error(message);
+    }
+    logInfo("Requesting WebGPU adapter (falling back across power preferences)...");
+    let adapter = null;
+    let lastAdapterError = null;
+    for (const powerPreference of ["high-performance", "low-power", undefined]) {
+      try {
+        const options = powerPreference ? {powerPreference} : undefined;
+        logDebug("navigator.gpu.requestAdapter(", powerPreference || "default", ")");
+        adapter = await navigator.gpu.requestAdapter(options);
+        if (adapter) {
+          logInfo("Adapter found with powerPreference =", powerPreference || "default");
+          break;
+        }
+      } catch (err) {
+        lastAdapterError = err;
+        logWarn("requestAdapter(", powerPreference || "default", ") threw:", err);
+      }
+    }
+    if (!adapter) {
+      const message = "No WebGPU adapter found. Possible causes: disabled hardware acceleration, an outdated or failing GPU driver, or WebGPU blocked by a browser flag. See the diagnostics above and try chrome://gpu.";
+      logError(message, lastAdapterError || "");
+      await dumpDiagnostics();
+      throw new Error(message);
+    }
     const info = adapter.info || {};
     state.adapterText = info.device || info.description || info.vendor || "high-performance adapter";
+    logInfo("Adapter selected:", state.adapterText, JSON.stringify(info));
     setText("adapter-meta", state.adapterText);
+    logDebug("Adapter limits:", {
+      maxBufferSize: adapter.limits.maxBufferSize,
+      maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize,
+      maxComputeWorkgroupsPerDimension: adapter.limits.maxComputeWorkgroupsPerDimension
+    });
     // Large runs (30k paths x 5,040 strategies) need storage buffers above
     // Chrome's default caps, so request the adapter's own maxima.
-    const device = await adapter.requestDevice({
-      requiredLimits: {
-        maxBufferSize: adapter.limits.maxBufferSize,
-        maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize
-      }
+    let device;
+    try {
+      device = await adapter.requestDevice({
+        requiredLimits: {
+          maxBufferSize: adapter.limits.maxBufferSize,
+          maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize
+        }
+      });
+    } catch (err) {
+      logError("adapter.requestDevice() failed:", err);
+      throw err;
+    }
+    // Surface GPU-side failures instead of letting them fail silently.
+    device.addEventListener("uncapturederror", (event) => {
+      const error = event.error || {};
+      logError("GPU uncaptured error:", error.message, error.stack ? "\n" + error.stack : "");
+    });
+    device.lost.then((lostInfo) => {
+      state.deviceLostReason = lostInfo.reason + (lostInfo.message ? " (" + lostInfo.message + ")" : "");
+      logError("WebGPU device lost:", state.deviceLostReason);
+      setStatus("WebGPU device lost: " + state.deviceLostReason, true);
+      setText("run-message", "The GPU device was lost (" + state.deviceLostReason + "). Reload the page; if this repeats, check your GPU driver.");
     });
     const visibility = GPUShaderStage.COMPUTE;
     // Main module: seven storage bindings (0-6). The Chrome D3D12 backend on
     // AMD drivers silently drops dispatch writes beyond two read-write storage
     // buffers per stage, so returns/layoffs/states share one packed scratch
     // buffer (binding 1) and spending is the only other read-write binding (6).
-    const shader = device.createShaderModule({code: SHADER_SOURCE});
+    let shader;
+    try {
+      shader = device.createShaderModule({code: SHADER_SOURCE});
+    } catch (err) {
+      logError("createShaderModule failed for the main pipeline:", err);
+      throw err;
+    }
     const layout = device.createBindGroupLayout({entries: Array.from({length: 7}, (_, binding) => ({
       binding, visibility, buffer: {type: binding === 1 || binding === 6 ? "storage" : "read-only-storage"}
     }))});
@@ -1396,7 +1514,13 @@ async function createDeviceContext() {
     const trackDrawdowns = device.createComputePipeline({layout: pipelineLayout, compute: {module: shader, entryPoint: "track_drawdowns"}});
     // Quantile module: separate 3-binding layout with a single read-write
     // binding.
-    const quantilesShader = device.createShaderModule({code: QUANTILES_SHADER_SOURCE});
+    let quantilesShader;
+    try {
+      quantilesShader = device.createShaderModule({code: QUANTILES_SHADER_SOURCE});
+    } catch (err) {
+      logError("createShaderModule failed for the quantile pipeline:", err);
+      throw err;
+    }
     const quantileLayout = device.createBindGroupLayout({entries: [
       {binding: 0, visibility, buffer: {type: "read-only-storage"}},
       {binding: 1, visibility, buffer: {type: "read-only-storage"}},
@@ -1407,10 +1531,15 @@ async function createDeviceContext() {
     const context = {device, layout, quantileLayout, generateReturns, generateLayoffs, accumulate, solve, trackDrawdowns, quantiles, limits: device.limits};
     state.deviceContext = context;
     setStatus("WebGPU ready: " + state.adapterText, false);
+    logInfo("WebGPU device context ready on", state.adapterText);
     return context;
   })();
   state.devicePromise = promise;
   try { return await promise; }
+  catch (err) {
+    logError("createDeviceContext failed:", err);
+    throw err;
+  }
   finally { if (state.devicePromise === promise) state.devicePromise = null; }
 }
 
@@ -1457,6 +1586,10 @@ async function simulate(settings, run) {
   const batchSize = DEFAULTS.batchSize;
   const allocationCount = RUN_ALLOCATION_COUNT;
   const totalSims = settings.simulations;
+  logInfo("Simulation start:", {simulations: totalSims, allocations: allocationCount, batchSize,
+          totalMonths: dynamic.constants.totalMonths, careerYears: dynamic.constants.careerYears,
+          pathCount: dynamic.constants.funds.length, houseCount: C.houseCount,
+          retirementAge: settings.model.retirementAge, pensionStartAge: settings.model.pensionStartAge});
   // Preflight: the spending and drawdown buffers are both
   // allocationCount x totalSims x 4 bytes; a run that needs more than the
   // GPU's storage-buffer binding limit would fail with an opaque WebGPU
@@ -1477,6 +1610,13 @@ async function simulate(settings, run) {
   const allocationBuffer = staticBuffer(device, selected.data);
   const modelBuffer = staticBuffer(device, dynamic.staticValues);
   const scratchSize = (batchSize * totalMonths * RETURN_FUND_COUNT + batchSize * careerYears + houseCount * pathCount * batchSize * 4 + houseCount * batchSize * 2 + batchSize * allocationCount) * 4;
+  logDebug("GPU buffers (MB):", {
+    scratch: (scratchSize / 1048576).toFixed(1),
+    spending: (allocationCount * totalSims * 4 / 1048576).toFixed(1),
+    drawdownReadback: (allocationCount * totalSims * 4 / 1048576).toFixed(1),
+    quantileOutput: (allocationCount * 201 * 4 / 1048576).toFixed(1),
+    limit: (Math.min(device.limits.maxBufferSize, device.limits.maxStorageBufferBindingSize) / 1048576).toFixed(0)
+  });
   const scratchBuffer = device.createBuffer({size: scratchSize, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC});
   const spendingBuffer = device.createBuffer({size: allocationCount * totalSims * 4, usage: GPUBufferUsage.STORAGE});
   const quantileBuffer = device.createBuffer({size: allocationCount * 201 * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC});
@@ -1497,6 +1637,8 @@ async function simulate(settings, run) {
     for (let batchNumber = 0; batchNumber < totalBatches; batchNumber++) {
       if (run.cancelled) throw new Error("__CANCELLED__");
       const count = Math.min(batchSize, totalSims - offset);
+      const batchStarted = performance.now();
+      logDebug("Batch", (batchNumber + 1) + "/" + totalBatches, "sims", offset, "..", offset + count - 1);
       const params = device.createBuffer({size: 128, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST});
       device.queue.writeBuffer(params, 0, makeParams(dynamic, totalSims, allocationCount, count, offset));
       const bindGroup = device.createBindGroup({layout: context.layout, entries: [params, ...batchBindings].map((buffer, binding) => ({binding, resource: {buffer}}))});
@@ -1534,11 +1676,13 @@ async function simulate(settings, run) {
         }
       }
       offset += count;
+      logDebug("Batch", (batchNumber + 1), "done in", (performance.now() - batchStarted).toFixed(0), "ms");
       setProgress(90 * offset / totalSims, 100, "Batch " + (batchNumber + 1) + "/" + totalBatches + " complete");
       await new Promise(resolve => requestAnimationFrame(resolve));
     }
     if (run.cancelled) throw new Error("__CANCELLED__");
     setProgress(95, 100, "Computing quantiles on GPU...");
+    logDebug("Quantile reduction: dispatching", allocationCount, "workgroups over", totalSims, "paths each");
     const quantileParams = device.createBuffer({size: 128, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST});
     device.queue.writeBuffer(quantileParams, 0, makeParams(dynamic, totalSims, allocationCount, totalSims, 0));
     const quantileBindGroup = device.createBindGroup({layout: context.quantileLayout, entries: [quantileParams, spendingBuffer, quantileBuffer].map((buffer, binding) => ({binding, resource: {buffer}}))});
@@ -1600,6 +1744,11 @@ async function simulate(settings, run) {
                     buyAge: hs.buyAge, p90BuyAge: hs.p90BuyAge, mortgage: hs.mortgage});
     }
     return {results, names, dynamic};
+  } catch (error) {
+    logError("WebGPU simulation failed (sims = " + totalSims + ", allocations = " + allocationCount + ", batch = " + batchSize + "):",
+             error && error.message ? error.message : error, error && error.stack ? "\n" + error.stack : "");
+    await dumpDiagnostics();
+    throw error;
   } finally {
     allocationBuffer.destroy(); modelBuffer.destroy();
     scratchBuffer.destroy(); spendingBuffer.destroy();
@@ -1962,11 +2111,15 @@ function setBusy(active) {
 }
 
 async function runSimulation() {
-  if (state.activeRun) return;
+  if (state.activeRun) {
+    logWarn("runSimulation ignored: a run is already active.");
+    return;
+  }
   let settings;
   try {
     settings = {simulations: simulationCountFromSlider(), model: readModelInputs()};
   } catch (error) {
+    logError("Invalid settings — run aborted:", error.message);
     setStatus(error.message, true);
     setText("run-message", error.message);
     return;
@@ -1978,6 +2131,16 @@ async function runSimulation() {
   setText("run-message", "Generating paths and solving on GPU...");
   setProgress(0, 100, "Allocating buffers...");
   const totalStart = performance.now();
+  // Watchdog: if the GPU hangs (e.g. a driver crash mid-run) the await on
+  // onSubmittedWorkDone never resolves; flag it instead of failing silently.
+  const watchdog = setTimeout(() => {
+    if (state.activeRun === run) {
+      logError("Run appears hung: no completion after 120s. Dumping diagnostics — check for GPU device-lost entries above.");
+      dumpDiagnostics();
+      setStatus("Run appears hung (120s). See the console diagnostics.", true);
+      setText("run-message", "The run appears hung. Check the console (F12) for HORIZON diagnostics, or reload the page.");
+    }
+  }, 120000);
   try {
     const output = await simulate(settings, run);
     state.results = output.results;
@@ -1987,6 +2150,7 @@ async function runSimulation() {
     setText("timing-meta", (totalElapsed / 1000).toFixed(2) + "s total");
     setText("run-message", "Completed " + output.names.length.toLocaleString("en-US") + " allocations x " + settings.simulations.toLocaleString("en-US") + " paths.");
     setProgress(100, 100, "Complete. Adjust controls below, then press \u201CUpdate Table & Re-Rank\u201D.");
+    logInfo("Simulation completed:", output.names.length, "allocations x", settings.simulations, "paths in", (totalElapsed / 1000).toFixed(2), "s");
     updatePhaseLabels();
     activeStrategy = null;
     renderTable();
@@ -1995,10 +2159,12 @@ async function runSimulation() {
       setText("run-message", "Run cancelled.");
       setProgress(0, 100, "Ready.");
     } else {
+      logError("runSimulation failed:", error.message || error, error.stack ? "\n" + error.stack : "");
       setStatus(error.message || "WebGPU simulation failed", true);
       setText("run-message", error.message || "Simulation failed");
     }
   } finally {
+    clearTimeout(watchdog);
     state.activeRun = null;
     setBusy(false);
   }
@@ -2125,6 +2291,8 @@ container.classList.add("settings-open");
 btnToggle.classList.add("active");
 btnLabel.textContent = "Close Settings Window";
 renderTable();
+logInfo("HORIZON initialised: ", TOTAL_ALLOCATIONS, "strategies,", RUN_ALLOCATION_COUNT, "active",
+        RUN_ALLOCATION_COUNT !== TOTAL_ALLOCATIONS ? "(?allocations= override)" : "");
 createDeviceContext().catch(error => {
   setStatus(error.message || "WebGPU unavailable", true);
   setText("run-message", error.message);

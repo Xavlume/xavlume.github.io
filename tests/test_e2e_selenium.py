@@ -344,6 +344,42 @@ def main() -> int:
         check("historical mode changes the calibrated means", shift > 1e-5, f"max xi shift {shift:.2e}")
         driver.execute_script("byId('inp-use-forward-cmas').checked = true;")
 
+        section("SCHEMA INPUT BINDING (all settings tabs)")
+        # Regression gate: every settings tab must feed readModelInputs.
+        binding = driver.execute_script(
+            "const s = schemaInputs();"
+            "s['tab-re:6'].value = '3,600';"
+            "s['tab-re:8'].value = '7.5';"
+            "s['tab-tax:0'].value = '62,000';"
+            "s['tab-cma:3'].value = '-1.00';"
+            "s['tab-spend:0'].value = '1.0';"
+            "const m = readModelInputs();"
+            "return {houseStart: m.houseSavingsStartAnnual, houseCap: m.houseSavingsMaxFraction,"
+            " meltdown: m.meltdownBracketAnnual, hisa: m.hisaAnnualRealReturn, smile0: m.smileSchedule[0].change};"
+        )
+        check("tab-re house savings fields bind", binding["houseStart"] == 3600 and abs(binding["houseCap"] - 0.075) < 1e-9,
+              f"start {binding['houseStart']} cap {binding['houseCap']}")
+        check("tab-tax field binds", binding["meltdown"] == 62000, str(binding["meltdown"]))
+        check("tab-cma field binds", abs(binding["hisa"] + 0.01) < 1e-9, str(binding["hisa"]))
+        check("tab-spend field binds", abs(binding["smile0"] - 0.01) < 1e-9, str(binding["smile0"]))
+        # End-to-end: an edited CMA must flow into the calibrated model.
+        driver.execute_script(
+            "const s = schemaInputs();"
+            "s['tab-cma:0'].value = '8.00';"
+            "byId('btn-run-sim').click();"
+        )
+        deadline = time.time() + 900
+        while time.time() < deadline:
+            if not driver.execute_script("return !!state.activeRun;") and driver.execute_script(
+                "return !!state.results && byId('run-message').textContent.includes('Completed');"
+            ):
+                break
+            time.sleep(2)
+        xi_cma8 = driver.execute_script("return state.dynamic.returnModel.xi.slice();")
+        check("edited CMA input changes the calibrated model", abs(xi_cma8[0] - xi_on[0]) > 1e-4,
+              f"xi[0] {xi_on[0]:.5f} -> {xi_cma8[0]:.5f}")
+        driver.execute_script("byId('btn-reset-defaults').click();")
+
         section("BROWSER CONSOLE")
         logs = driver.get_log("browser")
         severe = [entry for entry in logs if entry["level"] == "SEVERE"]
@@ -351,6 +387,30 @@ def main() -> int:
             print(f"  [SEVERE] {entry['message'][:250]}")
         print(f"  ({len(logs)} total log entries, {len(severe)} severe)")
         check("no SEVERE console errors", len(severe) == 0)
+
+        section("DIAGNOSTICS & ERROR PATH")
+        has_diag = driver.execute_script("return typeof window.dumpDiagnostics === 'function';")
+        check("dumpDiagnostics() helper is exposed", has_diag)
+        driver.execute_async_script("window.dumpDiagnostics().then(() => arguments[0]());")
+        time.sleep(0.5)
+        # Deliberate validation failure: a zero starting salary must surface
+        # in the UI AND be logged to the console with HORIZON context.
+        driver.execute_script(
+            "const s = schemaInputs(); s['tab-career:5'].value = '0';"
+            "byId('btn-run-sim').click();"
+        )
+        time.sleep(1.5)
+        err_state = driver.execute_script(
+            "return {bad: byId('gpu-status').className.includes('bad'), msg: byId('run-message').textContent};"
+        )
+        check("invalid settings surface an error in the UI",
+              err_state["bad"] and "Starting salary must be positive" in err_state["msg"],
+              f"'{err_state['msg']}'")
+        error_logs = driver.get_log("browser")
+        horizon_lines = [e for e in error_logs if "HORIZON" in e["message"]]
+        check("failure is logged to the console with HORIZON context", len(horizon_lines) > 0,
+              f"{len(horizon_lines)} HORIZON log lines")
+        driver.execute_script("byId('btn-reset-defaults').click();")
 
         print("\n" + "=" * 100)
         print("RESULT:", "ALL CHECKS PASSED" if failures == 0 else f"{failures} CHECKS FAILED")
