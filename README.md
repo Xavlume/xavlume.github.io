@@ -177,15 +177,6 @@ human-friendly formatting/parsing helpers (`20.0%`, `$88,000`,
 `4.30% / yr`) that the settings window uses to present and read the same
 values the engine stores as raw decimals (`0.2`, `88000`, `0.043`).
 
-## Deployment
-
-`index.html` is the only artifact you need to host. Push the repository to
-GitHub and enable **Pages → Deploy from a branch** — GitHub Pages serves
-`index.html` from the repository root automatically, so the live app appears
-at `https://<user>.github.io/<repo>/` with zero configuration. It has no
-runtime dependencies and works offline except for the Google Fonts
-stylesheet, which falls back to system fonts.
-
 > Tip: for very large runs (e.g. 30k paths), load with
 > `?allocations=1000` to cap GPU memory to a subset of strategies.
 
