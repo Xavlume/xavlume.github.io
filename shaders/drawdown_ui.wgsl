@@ -5,7 +5,9 @@
 // Drawdowns are measured on CUMULATIVE RETURN INDICES rather than net liquid
 // wealth, so planned decumulation (spending the portfolio down to $0 by the
 // death age) does not masquerade as a drawdown:
-//     accumulation: R^accum_t = prod(1 + r_accum)   (allocation glidepath)
+//     accumulation: R^accum_t = prod(1 + r_accum)   (allocation glidepath);
+//                   precomputed per (path, simulation) by the accumulate pass
+//                   and read back from scratch (see accum_ui_at)
 //     retirement:   R^retire_t = prod(1 + r_phase)  (fund return on the
 //                   invested portion, HISA return on any cash wedge, blended
 //                   by the actual wealth split each month)
@@ -32,24 +34,11 @@ fn drawdown_ui(w: f32, simulation: u32, allocation: u32) -> vec4<f32> {
     let post_cash = (allocation_info.w & 2u) != 0u;
     let house = (allocation_info.w >> 2u) & 7u;
 
-    let accum_months = params.dimensions.w;
     let bridge_months = params.calendar.x;
 
-    // --- Accumulation-phase drawdown on the cumulative return index of the
-    // --- allocation's accumulation glidepath.
-    var r_accum = 1.0;
-    var peak_accum = 1.0;
-    var sum_sq_accum = 0.0;
-
-    for (var month = 0u; month < accum_months; month += 1u) {
-        let fund = accum_fund(accumulation_fund, month);
-        let r = return_at(simulation, month, fund);
-
-        r_accum *= 1.0 + r;
-        peak_accum = max(peak_accum, r_accum);
-        let dd_accum = (r_accum - peak_accum) / peak_accum * 100.0;
-        sum_sq_accum += dd_accum * dd_accum;
-    }
+    // --- Accumulation-phase Ulcer Index is memoized per (path, simulation)
+    // --- by the accumulate pass (it depends only on the path's glidepath),
+    // --- so no re-walk of the accumulation months happens here.
 
     // --- Retirement months: byte-for-byte test_solvency at the solved w,
     // --- starting from the stored (house, accumulation path) state.
@@ -216,7 +205,7 @@ fn drawdown_ui(w: f32, simulation: u32, allocation: u32) -> vec4<f32> {
         }
     }
 
-    let ui_accum = sqrt(sum_sq_accum / max(f32(accum_months), 1.0));
+    let ui_accum = accum_ui_at(accumulation_fund, simulation);
     let ui_bridge = sqrt(sum_sq_bridge / max(f32(bridge_months), 1.0));
     let ui_post = sqrt(sum_sq_post / max(f32(params.solver.x - bridge_months), 1.0));
     var w_b = 0.60;

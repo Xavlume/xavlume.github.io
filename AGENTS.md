@@ -217,6 +217,12 @@ them breaks parity tests or the E2E suite.**
    only reads it (§4).
 7. **NEVER** commit `downloaded_prices.csv` — it is intentionally gitignored;
    regenerate it with `download.py` instead.
+8. **NEVER** `git commit` (or stage-then-commit) without the **user's explicit
+   permission**. Leave all changes in the working tree, unstaged or staged, for
+   the user to review and commit themselves. "Definition of done" does NOT
+   include committing — if a task description or checklist seems to say so,
+   the user's permission still wins. When you finish a task, report exactly
+   which files changed and offer to commit, but do not commit.
 
 ---
 
@@ -266,12 +272,21 @@ Layout is 9 × `vec4` (`dimensions`, `solver`, `calendar`, `constants0-2`,
 `generate`, `generate1`, `dispatch`) — documented field-by-field in
 `common.wgsl`'s `Params`. The `dispatch.x` field is the
 allocation-columns-per-workgroup count from
-`SimulationConfig.columns_per_workgroup` (64 by default in the deployed page,
+`SimulationConfig.columns_per_workgroup` (16 by default in the deployed page,
 1 in the Python engine): `solve`/`track_drawdowns` loop over that many
-allocation columns per thread so the dispatch grid shrinks without ever
-splitting into multiple dispatches (splitting silently corrupts results on
-some AMD D3D12 drivers, and single large dispatches trip the Windows TDR
-hang detector on GPUs without mid-dispatch compute preemption). There are
+allocation columns per thread so the grid stays ONE dispatch per pass
+(splitting the allocation space into multiple dispatches silently corrupts
+results on some AMD D3D12 drivers). Keep the grid small enough that a single
+dispatch never runs longer than the Windows TDR watchdog (~2 s) on GPUs
+without mid-dispatch compute preemption. The two knobs that bound
+per-dispatch wall time are `SimulationConfig.batch_size` (sims per batch)
+and `columns_per_workgroup`, and they interact: at small batch sizes a large
+`columns_per_workgroup` leaves the GPU under-occupied (threads ≈
+batch × allocations / columns), so wall time collapses into the per-thread
+serial chain (batch 100 × columns 128 measured ~0.87 s/dispatch vs ~0.09 s at
+columns 8). Defaults (250 sims, 16 columns) keep dispatches ~0.2 s on a
+modern dGPU with plenty of threads — roughly 5× the TDR headroom of the
+previous 1,024-sim/128-column default while still being faster. There are
 **three synchronized implementations**:
 
 - `engine.make_params` (Python, `engine.py`)
@@ -397,8 +412,10 @@ of the tab (flat position 3):
 ## 8. Gotchas
 
 - **`index.html` is committed** (GitHub Pages serves it). After any change that
-  affects the page, rebuild and commit the new `index.html` too. Never edit it
-  by hand — your edits will be overwritten by the next build.
+  affects the page, rebuild `index.html` so the working tree stays deployable.
+  Never edit it by hand — your edits will be overwritten by the next build.
+  Whether the rebuild gets committed is the user's call (see zero-tolerance
+  rule 8).
 - **`downloaded_prices.csv` is gitignored.** A fresh clone has no price history
   and `build_html.py` will fail until `download.py` has been run. If you see a
   missing-CSV error, regenerate it (network required).
@@ -409,7 +426,10 @@ of the tab (flat position 3):
 - **Settings schema indices are positional.** Reordering inputs inside a
   template `.form-grid-2` silently rebinds fields; keep `INPUT_SCHEMA` in sync
   or the E2E schema gate catches you.
-- **Run pacing**: default batch 1,024 sims, slider 500–10,000; `?allocations=N`
+- **Run pacing**: default batch 250 sims (10,000 sims = 40 batches; each batch
+  is one submit whose `solve` dispatch must stay well under the Windows TDR
+  watchdog — see §6.3 for the batch/columns trade-off), slider 500–10,000;
+  `?allocations=N`
   caps strategies for huge runs; GPU buffer preflight rejects runs that exceed
   `maxStorageBufferBindingSize`; a 120-second watchdog flags hung runs; device
   loss surfaces in the status bar and console. Console logs are prefixed
@@ -431,4 +451,6 @@ of the tab (flat position 3):
 - [ ] No hardcoded parameter duplicating `config.py`; no buffer layout changed
       in only one implementation; no read-write binding added.
 - [ ] `template_readonly.html` untouched by any script; `index.html` never
-      hand-edited; changed files committed (including regenerated `index.html`).
+      hand-edited; regenerated `index.html` present in the working tree; **no
+      commit made** — committing happens only with the user's explicit
+      permission (zero-tolerance rule 8).

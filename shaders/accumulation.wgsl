@@ -137,9 +137,23 @@ fn accumulate(@builtin(global_invocation_id) gid: vec3<u32>) {
     let accum_months = params.dimensions.w;
     let is_renter = house == 0u;
 
+    // Accumulation-phase drawdown index, memoized for track_drawdowns: the
+    // cumulative-return-index UI of a (path, simulation) pair depends only on
+    // the path's fund glidepath, so renter threads (house 0) compute it once
+    // here instead of once per allocation in the drawdown pass.
+    var r_accum = 1.0;
+    var peak_accum = 1.0;
+    var sum_sq_accum = 0.0;
+
     for (var month = 0u; month < accum_months; month += 1u) {
         let fund = accum_fund(path, month);
         let r = return_at(simulation, month, fund);
+        if (house == 0u) {
+            r_accum *= 1.0 + r;
+            peak_accum = max(peak_accum, r_accum);
+            let dd_accum = (r_accum - peak_accum) / peak_accum * 100.0;
+            sum_sq_accum += dd_accum * dd_accum;
+        }
         tfsa *= 1.0 + r;
         rrsp *= 1.0 + r;
 
@@ -343,5 +357,9 @@ fn accumulate(@builtin(global_invocation_id) gid: vec3<u32>) {
     states_set(house, path, simulation, vec4<f32>(tfsa, rrsp, non_reg, non_reg_acb));
     if (path == 0u) {
         house_outcomes_set(house, simulation, vec2<f32>(house_bought, buy_month));
+    }
+    if (house == 0u) {
+        let ui_accum = sqrt(sum_sq_accum / max(f32(accum_months), 1.0));
+        scratch[accum_ui_region_offset() + path * params.generate.z + simulation] = ui_accum;
     }
 }

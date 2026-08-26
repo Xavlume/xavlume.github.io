@@ -8,8 +8,10 @@
 // account growth, cash-wedge establishment, RRSP meltdown, OAS clawback,
 // Quebec tax interpolation, non-registered capital-gains taxation and the
 // housing cost (market rent for renters, property taxes + condo for owners).
-// The solved w is NET disposable lifestyle spending, so owning and renting
-// rank on the same net scale.
+// The walk bails out at the first uncovered month (the result is decided),
+// which makes failing candidates - the high-w side of the bisection - much
+// cheaper than a full 360-month walk. The solved w is NET disposable
+// lifestyle spending, so owning and renting rank on the same net scale.
 
 fn test_solvency(w: f32, simulation: u32, allocation: u32) -> bool {
     let allocation_info = allocations[allocation * 3u];
@@ -49,7 +51,6 @@ fn test_solvency(w: f32, simulation: u32, allocation: u32) -> bool {
     }
 
     var post_wedge_established = false;
-    var solvent = true;
 
     for (var month = 0u; month < params.solver.x; month += 1u) {
         var phase_code = post_fund;
@@ -171,10 +172,14 @@ fn test_solvency(w: f32, simulation: u32, allocation: u32) -> bool {
         }
 
         if (remaining > 1e-2) {
-            solvent = false;
+            // First uncovered month => insolvent for this w. No later month
+            // can restore solvency, so stop the walk immediately instead of
+            // walking the remaining months (results are identical to the old
+            // full walk, which returned the same false).
+            return false;
         }
     }
-    return solvent;
+    return true;
 }
 
 @compute @workgroup_size(64, 1, 1)

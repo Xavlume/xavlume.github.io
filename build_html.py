@@ -802,7 +802,7 @@ async function simulate(settings, run) {
   const selected = selectedAllocationBuffer(allocationCount, dynamic.constants);
   const allocationBuffer = staticBuffer(device, selected.data);
   const modelBuffer = staticBuffer(device, dynamic.staticValues);
-  const scratchSize = (batchSize * totalMonths * RETURN_FUND_COUNT + batchSize * careerYears + houseCount * pathCount * batchSize * 4 + houseCount * batchSize * 2 + batchSize * allocationCount) * 4;
+  const scratchSize = (batchSize * totalMonths * RETURN_FUND_COUNT + batchSize * careerYears + houseCount * pathCount * batchSize * 4 + houseCount * batchSize * 2 + batchSize * allocationCount + pathCount * batchSize) * 4;
   logDebug("GPU buffers (MB):", {
     scratch: (scratchSize / 1048576).toFixed(1),
     spending: (allocationCount * totalSims * 4 / 1048576).toFixed(1),

@@ -323,6 +323,7 @@ class Engine:
                 + house_count * path_count * self.batch_size * 4
                 + house_count * self.batch_size * 2
                 + self.batch_size * n_allocations
+                + self.batch_size * path_count  # memoized accumulation-phase UI
             )
             * 4,
             usage=storage_usage | wgpu.BufferUsage.COPY_SRC,

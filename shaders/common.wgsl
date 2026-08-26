@@ -45,6 +45,12 @@ struct Params {
 //                                 (bought flag, buy month)
 //   [+ DRAW)                      one Composite Ulcer Index score per
 //                                 (simulation, allocation)
+//   [+ UI_ACC)                    accumulation-phase Ulcer Index per
+//                                 (accumulation path, simulation), memoized
+//                                 once by the accumulate pass (the index
+//                                 depends only on the path's glidepath) so
+//                                 track_drawdowns never re-walks the
+//                                 accumulation months per allocation
 //
 @group(0) @binding(1) var<storage, read_write> scratch: array<f32>;
 
@@ -93,6 +99,14 @@ fn house_flags_region_offset() -> u32 {
 
 fn drawdown_region_offset() -> u32 {
     return house_flags_region_offset() + house_count() * params.generate.z * 2u;
+}
+
+fn accum_ui_region_offset() -> u32 {
+    return drawdown_region_offset() + params.generate.z * params.dimensions.y;
+}
+
+fn accum_ui_at(path: u32, simulation: u32) -> f32 {
+    return scratch[accum_ui_region_offset() + path * params.generate.z + simulation];
 }
 
 fn return_at(simulation: u32, month: u32, fund: u32) -> f32 {
