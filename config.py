@@ -160,7 +160,15 @@ class SimulationConfig:
 
     simulations: int = 1_000
     batch_size: int = 250
-    columns_per_workgroup: int = 16
+    # Allocation columns walked serially per solve/track_drawdowns thread.
+    # 1 = one column per thread (maximum parallelism, the original design):
+    # at the full 5,040-strategy space the dispatch is throughput-bound, so
+    # any column count measures the same ~0.18 s per dispatch (~11x TDR
+    # headroom), while at small spaces (e.g. leverage off = 1,600) fewer
+    # columns give strictly shorter dispatches (61 ms at 1 vs 121 ms at 16,
+    # measured). The k-loop stride still covers every allocation in ONE
+    # dispatch per pass (AMD D3D12 write-drop workaround).
+    columns_per_workgroup: int = 1
     gamma: float = 3.0
     floor_percentile: int = 10
     target_spending_monthly: float = 3_500.0

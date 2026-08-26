@@ -25,7 +25,9 @@ struct Params {
     constants2: vec4<f32>,   // OAS clawback rate, employer match rate, match percent, accumulation path count
     generate: vec4<u32>,     // PRNG seed, skew-t df, batch simulation count, batch offset
     generate1: vec4<f32>,    // real borrowing rate/12, extra MER 1.5/12, extra MER 2.0/12, layoff probability
-    dispatch: vec4<u32>,     // allocation columns per workgroup (compat slicing); 1 = one column per thread
+    dispatch: vec4<u32>,     // allocation columns per workgroup (compat slicing); 1 = one column per thread;
+                             // .z = 1 when the leveraged return series (VEQT1.5/VEQT2) are generated,
+                             // 0 = skipped (browser leverage-off runs; the Python engine always sets 1)
 };
 
 @group(0) @binding(0) var<storage, read> params: Params;

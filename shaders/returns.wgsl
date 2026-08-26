@@ -85,13 +85,17 @@ fn generate_returns(@builtin(global_invocation_id) gid: vec3<u32>) {
     let veqt = max(-0.95, xi0 + omega0 * (delta0 * skew + fund_normal.x * l00 + fund_normal.y * l01 + fund_normal.z * l02) * inv_scale);
     let vgro = max(-0.95, xi1 + omega1 * (delta1 * skew + fund_normal.x * l10 + fund_normal.y * l11 + fund_normal.z * l12) * inv_scale);
     let vbal = max(-0.95, xi2 + omega2 * (delta2 * skew + fund_normal.x * l20 + fund_normal.y * l21 + fund_normal.z * l22) * inv_scale);
-    let veqt15 = max(-0.95, 1.5 * veqt - 0.5 * params.generate1.x - params.generate1.y);
-    let veqt2 = max(-0.95, 2.0 * veqt - params.generate1.x - params.generate1.z);
 
     let out_index = index * params.solver.y;
     scratch[out_index] = veqt;
-    scratch[out_index + 1u] = veqt15;
-    scratch[out_index + 2u] = veqt2;
+    // Leverage-off runs never read funds 1/2 (no strategy references them),
+    // so the transforms are skipped entirely when params.dispatch.z is 0.
+    if (params.dispatch.z != 0u) {
+        let veqt15 = max(-0.95, 1.5 * veqt - 0.5 * params.generate1.x - params.generate1.y);
+        let veqt2 = max(-0.95, 2.0 * veqt - params.generate1.x - params.generate1.z);
+        scratch[out_index + 1u] = veqt15;
+        scratch[out_index + 2u] = veqt2;
+    }
     scratch[out_index + 3u] = vgro;
     scratch[out_index + 4u] = vbal;
 }

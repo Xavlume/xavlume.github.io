@@ -16,6 +16,9 @@ simulation, then verifies:
      the +CASH bridge lowers the Composite UI.
   6. Live reactive parameter binding: editing the career start age updates
      the tier labels and table phase headers immediately.
+  7. The Leverage checkbox defaults to OFF and gates the strategy pool: a
+     default run simulates only the 1,600 non-leveraged allocations (no
+     VEQT 1.5 / VEQT 2.0); with it ON the run covers all 5,040.
 
 Requires: pip install selenium (chromedriver resolved by Selenium Manager).
 
@@ -162,12 +165,20 @@ def main() -> int:
         check("Simulate button carries the attention effect before the first run", btn_state["attract"])
 
         section("RUN")
+        lever = driver.execute_script(
+            "return {checked: byId('chk-leverage').checked, label: byId('val-leverage-count').textContent};"
+        )
+        check("Leverage checkbox defaults to OFF", not lever["checked"] and lever["label"] == "1,600 allocations", f"'{lever['label']}'")
         run_simulation(driver, args.simulations)
         info = driver.execute_script(
             "return {timing: byId('timing-meta').textContent, completed: byId('completed-meta').textContent, n: state.results.length, top: displayedRows()[0].name};"
         )
         print(f"timing: {info['timing']}  completed: {info['completed']}  strategies: {info['n']:,}")
-        check("strategy count is 5,040", info["n"] == 5040, f"got {info['n']:,}")
+        check("default run (leverage OFF) simulates 1,600 strategies", info["n"] == 1600, f"got {info['n']:,}")
+        no_lev_names = driver.execute_script(
+            "return state.results.filter(s => s.name.includes('VEQT1.5') || s.name.includes('VEQT2')).length;"
+        )
+        check("default run excludes every VEQT1.5 / VEQT2 strategy", no_lev_names == 0, f"{no_lev_names:,} leveraged rows")
         check("timing metadata populated", info["timing"] != "—" and "s total" in info["timing"], f"'{info['timing']}'")
         print(f"  top strategy: {info['top']}")
         btn_after = driver.execute_script(
@@ -175,6 +186,17 @@ def main() -> int:
         )
         check("attention effect disappears after the first run", not btn_after["attract"])
         check("button label restored after the run", btn_after["label"] == "Simulate", f"'{btn_after['label']}'")
+        # The sections below (leveraged UI ordering, search narrowing) need the
+        # full 5,040 space, so re-run with the Leverage checkbox ON.
+        driver.execute_script(
+            "byId('chk-leverage').checked = true; byId('chk-leverage').dispatchEvent(new Event('change'));"
+        )
+        run_simulation(driver, args.simulations)
+        full = driver.execute_script(
+            "return {n: state.results.length, leveraged: state.results.filter(s => s.name.includes('VEQT1.5') || s.name.includes('VEQT2')).length};"
+        )
+        check("leverage ON runs all 5,040 strategies", full["n"] == 5040, f"got {full['n']:,}")
+        check("leverage ON includes leveraged strategies", full["leveraged"] > 0, f"{full['leveraged']:,} leveraged rows")
 
         section("BADGE COLOR CODING")
         badges = driver.execute_script(

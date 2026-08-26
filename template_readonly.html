@@ -240,6 +240,7 @@ th.sortable[data-sorted="desc"]::after { content: "\25BC"; }
 th.sortable[data-sorted="asc"]::after { content: "\25B2"; }
 th.right, td.right { text-align: right; }
 tbody tr { border-bottom: 1px solid var(--border-subtle); cursor: pointer; transition: background 0.1s; }
+tbody tr.v-spacer { border: 0; cursor: default; transition: none; }
 tbody tr:hover { background: #f8fafc; }
 tbody tr.selected-row { background: var(--brand-green-bg); border-left: 3px solid var(--brand-green); }
 td { padding: 10px 12px; vertical-align: middle; white-space: nowrap; }
@@ -372,6 +373,11 @@ td { padding: 10px 12px; vertical-align: middle; white-space: nowrap; }
   gap: 8px;
 }
 
+/* Leverage toggle row inside the runner box */
+.sim-toggle-row { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+.sim-toggle-row input[type="checkbox"] { width: 15px; height: 15px; margin: 0; cursor: pointer; accent-color: var(--brand-navy); }
+.sim-toggle-row .control-value { margin-left: auto; }
+
 .settings-footer {
   padding: 12px 18px; border-top: 1px solid var(--border-subtle);
   background: #fafafa; display: flex; gap: 10px;
@@ -455,7 +461,7 @@ td { padding: 10px 12px; vertical-align: middle; white-space: nowrap; }
             <span class="control-label">Drawdown Aversion (&lambda; &mdash; Ulcer Index)</span>
             <span class="control-value" id="val-lambda">0.000 (Neutral)</span>
           </div>
-          <input type="range" id="slider-lambda" min="0" max="0.04" step="0.005" value="0.000">
+          <input type="range" id="slider-lambda" min="0" max="0.03" step="0.005" value="0.000">
           <span style="font-size:11px; color:var(--text-muted)">Penalizes strategies that suffer long, deep drawdowns.</span>
         </div>
 
@@ -488,7 +494,7 @@ td { padding: 10px 12px; vertical-align: middle; white-space: nowrap; }
       <div class="table-toolbar">
         <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap">
           <div class="segmented-pills" id="seg-mix">
-            <button class="seg-pill active" data-mix="ALL">All (5,040)</button>
+            <button class="seg-pill active" data-mix="ALL">All (1,600)</button>
             <button class="seg-pill" data-mix="NO_CASH">No Cash</button>
             <button class="seg-pill" data-mix="NO_GLIDEPATH">No Glidepath</button>
             <button class="seg-pill" data-mix="ASSETS_ONLY">Assets Only</button>
@@ -528,6 +534,7 @@ td { padding: 10px 12px; vertical-align: middle; white-space: nowrap; }
               <th class="sortable" id="th-bridge" data-col="bridge">Early Bridge (55–65)</th>
               <th class="sortable" id="th-post" data-col="post">Post-65</th>
               <th class="right sortable" data-col="buyAge">Average Buy Age</th>
+              <th class="right sortable" data-col="p90BuyAge">P90 Buy Age</th>
               <th class="right sortable" data-col="mortgage">Average Mortgage</th>
               <th class="right sortable" style="color:var(--brand-green)" data-col="ce">Certainty Equivalent</th>
               <th class="right sortable" data-col="median">Median</th>
@@ -854,6 +861,11 @@ td { padding: 10px 12px; vertical-align: middle; white-space: nowrap; }
     <!-- Simulation Runner Setup Inside Settings -->
     <div style="padding: 0 18px 10px;">
       <div class="sim-runner-box">
+        <label class="sim-toggle-row" for="chk-leverage" title="Include VEQT 1.5 / VEQT 2.0 leveraged strategies. Off by default: 1,600 strategies without leverage; on: all 5,040.">
+          <input type="checkbox" id="chk-leverage">
+          <span class="control-label">Leverage</span>
+          <span class="control-value" id="val-leverage-count">1,600 allocations</span>
+        </label>
         <div class="control-top">
           <span class="control-label">Monte Carlo Path Count</span>
           <span class="control-value" id="val-sim-count">1,000 Paths</span>

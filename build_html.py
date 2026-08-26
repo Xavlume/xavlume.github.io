@@ -65,8 +65,19 @@ const RUN_ALLOCATION_COUNT = Number(new URLSearchParams(location.search).get("al
 // DECLINING/RISING accumulation glidepaths are monthly switching schedules,
 // not return series, so they are sampled on-chip by the accumulate pass.
 const RETURN_FUND_COUNT = 5;
+// Upper bound (ms) for the per-batch progress-paint yield in the batch loop;
+// see the comment at the await site.
+const BATCH_YIELD_MS = 16;
 const ALLOCATION_NAMES = MODEL.allocations.names;
 const ALLOCATION_METADATA = new Uint32Array(MODEL.allocations.metadata);
+// The "Leverage" checkbox in the settings window gates whether leveraged
+// strategies (VEQT1.5 = code 1, VEQT2 = code 2) participate in a run. The
+// compact metadata row is [accumCode, bridgeCode, postCode, flags] with fund
+// codes VEQT=0..RISING=6 (see allocation_phase_code), so excluding codes 1/2
+// from all three phase slots shrinks the strategy space from 5 houses x 7
+// accumulation paths x 12 bridge x 12 post = 5,040 down to
+// 5 x 5 x 8 x 8 = 1,600 strategies.
+const LEVERAGED_FUND_CODES = [1, 2];
 
 const state = {
   results: null,        // per-strategy simulation results (quantiles, ui, ...)
@@ -584,7 +595,7 @@ function buildDynamicModel(config) {
 // ---------------------------------------------------------------------------
 // WebGPU pipeline
 // ---------------------------------------------------------------------------
-function makeParams(dynamic, simulations, allocations, batchSims, simOffset, columnsPerWorkgroup = 1) {
+function makeParams(dynamic, simulations, allocations, batchSims, simOffset, columnsPerWorkgroup = 1, generateLeveraged = true) {
   const dimensions = dynamic.constants;
   const buffer = new ArrayBuffer(144);
   new Uint32Array(buffer, 0, 4).set([simulations, allocations, dimensions.totalMonths, dimensions.accumMonths]);
@@ -595,7 +606,9 @@ function makeParams(dynamic, simulations, allocations, batchSims, simOffset, col
   new Float32Array(buffer, 80, 4).set([dimensions.oasClawbackRate, dimensions.employerMatchRate, dimensions.employerMatchPercent, dimensions.funds.length]);
   new Uint32Array(buffer, 96, 4).set([dimensions.seed, dimensions.skewDegreesFreedom, batchSims, simOffset]);
   new Float32Array(buffer, 112, 4).set([dimensions.realBorrowRateAnnual / 12, dimensions.extraMer15 / 12, dimensions.extraMer20 / 12, dimensions.layoffAnnualProbability]);
-  new Uint32Array(buffer, 128, 4).set([columnsPerWorkgroup, 0, 0, 0]);
+  // dispatch.z: 1 = generate the leveraged return series (VEQT1.5/VEQT2),
+  // 0 = skip them (leverage-off runs never read funds 1/2).
+  new Uint32Array(buffer, 128, 4).set([columnsPerWorkgroup, 0, generateLeveraged ? 1 : 0, 0]);
   return buffer;
 }
 
@@ -725,9 +738,34 @@ async function createDeviceContext() {
   finally { if (state.devicePromise === promise) state.devicePromise = null; }
 }
 
-function selectedAllocationIndices(count) {
-  if (count === TOTAL_ALLOCATIONS) return Array.from({length: TOTAL_ALLOCATIONS}, (_, i) => i);
-  return Array.from({length: count}, (_, i) => Math.floor(i * (TOTAL_ALLOCATIONS - 1) / (count - 1)));
+function leverageEnabled() {
+  const toggle = byId("chk-leverage");
+  return !toggle || toggle.checked;
+}
+
+function allocationPool(leverage) {
+  // Source indices into ALLOCATION_NAMES/METADATA for a run. With leverage
+  // ON the pool is every strategy (5,040); OFF it drops every strategy whose
+  // accumulation, bridge or post phase is VEQT1.5 or VEQT2 (1,600 remain).
+  if (leverage) return Array.from({length: TOTAL_ALLOCATIONS}, (_, i) => i);
+  const pool = [];
+  for (let i = 0; i < TOTAL_ALLOCATIONS; i++) {
+    const codes = ALLOCATION_METADATA.subarray(i * 4, i * 4 + 3);
+    if (LEVERAGED_FUND_CODES.includes(codes[0]) || LEVERAGED_FUND_CODES.includes(codes[1]) || LEVERAGED_FUND_CODES.includes(codes[2])) continue;
+    pool.push(i);
+  }
+  return pool;
+}
+
+function effectiveAllocationCount(leverage) {
+  // The ?allocations=N URL cap applies to the leverage-filtered pool.
+  return Math.min(RUN_ALLOCATION_COUNT, allocationPool(leverage).length);
+}
+
+function selectedAllocationIndices(count, leverage) {
+  const pool = allocationPool(leverage);
+  if (count === pool.length) return pool;
+  return Array.from({length: count}, (_, i) => pool[Math.floor(i * (pool.length - 1) / (count - 1))]);
 }
 
 function glidepathBoundaries(code, months) {
@@ -742,8 +780,8 @@ function glidepathBoundaries(code, months) {
   return [0, 0];
 }
 
-function selectedAllocationBuffer(count, constants) {
-  const indices = selectedAllocationIndices(count);
+function selectedAllocationBuffer(count, constants, leverage) {
+  const indices = selectedAllocationIndices(count, leverage);
   const data = new Uint32Array(count * 12);
   for (let i = 0; i < count; i++) {
     const metadata = ALLOCATION_METADATA.subarray(indices[i] * 4, indices[i] * 4 + 4);
@@ -766,19 +804,23 @@ async function simulate(settings, run) {
   const dynamic = buildDynamicModel(settings.model);
   const device = context.device;
   const batchSize = DEFAULTS.batchSize;
-  const allocationCount = RUN_ALLOCATION_COUNT;
-  // Dispatch shaping (always on): each solve/track_drawdowns workgroup walks
-  // `columnsPerWorkgroup` allocation columns, letting the dispatch grid
-  // shrink to 1/columnsPerWorkgroup of its size WITHOUT splitting into
-  // multiple dispatches. A single dispatch keeps per-command runtime low
-  // enough to dodge the Windows TDR hang detector on GPUs without
-  // mid-dispatch compute preemption (e.g. Maxwell) while staying safe on AMD
-  // D3D12 drivers that silently drop writes from dispatches after the first.
-  // The shaders mirror the stride math, so results are byte-identical.
+  const leverage = leverageEnabled();
+  const allocationCount = effectiveAllocationCount(leverage);
+  // Dispatch shaping: each solve/track_drawdowns thread serially walks
+  // `columnsPerWorkgroup` allocation columns (stride = dispatch_y), keeping
+  // the grid ONE dispatch per pass - splitting the allocation space into
+  // multiple dispatches silently corrupts results on some AMD D3D12 drivers.
+  // The shaders mirror the stride math, so results are byte-identical for
+  // any column count. Measured (batch 250): at the full 5,040-strategy space
+  // the solve dispatch is throughput-bound and takes ~0.18 s regardless of
+  // the column count, while at small spaces (e.g. leverage off = 1,600)
+  // fewer columns give strictly shorter dispatches (61 ms at 1 column vs
+  // 121 ms at 16). The configured default is therefore 1 column per thread
+  // (maximum parallelism, shortest dispatches, most TDR headroom).
   const columnsPerWorkgroup = Math.max(1, DEFAULTS.columnsPerWorkgroup | 0);
   const dispatchAllocations = Math.max(1, Math.ceil(allocationCount / columnsPerWorkgroup));
   const totalSims = settings.simulations;
-  logInfo("Simulation start:", {simulations: totalSims, allocations: allocationCount, batchSize,
+  logInfo("Simulation start:", {simulations: totalSims, allocations: allocationCount, leverage, batchSize,
           columnsPerWorkgroup, dispatchAllocations,
           totalMonths: dynamic.constants.totalMonths, careerYears: dynamic.constants.careerYears,
           pathCount: dynamic.constants.funds.length, houseCount: C.houseCount,
@@ -799,7 +841,7 @@ async function simulate(settings, run) {
   const totalMonths = dynamic.constants.totalMonths;
   const careerYears = dynamic.constants.careerYears;
   const houseCount = C.houseCount;
-  const selected = selectedAllocationBuffer(allocationCount, dynamic.constants);
+  const selected = selectedAllocationBuffer(allocationCount, dynamic.constants, leverage);
   const allocationBuffer = staticBuffer(device, selected.data);
   const modelBuffer = staticBuffer(device, dynamic.staticValues);
   const scratchSize = (batchSize * totalMonths * RETURN_FUND_COUNT + batchSize * careerYears + houseCount * pathCount * batchSize * 4 + houseCount * batchSize * 2 + batchSize * allocationCount + pathCount * batchSize) * 4;
@@ -833,7 +875,7 @@ async function simulate(settings, run) {
       const batchStarted = performance.now();
       logDebug("Batch", (batchNumber + 1) + "/" + totalBatches, "sims", offset, "..", offset + count - 1);
       const params = device.createBuffer({size: 144, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST});
-      device.queue.writeBuffer(params, 0, makeParams(dynamic, totalSims, allocationCount, count, offset, columnsPerWorkgroup));
+      device.queue.writeBuffer(params, 0, makeParams(dynamic, totalSims, allocationCount, count, offset, columnsPerWorkgroup, leverage));
       const bindGroup = device.createBindGroup({layout: context.layout, entries: [params, ...batchBindings].map((buffer, binding) => ({binding, resource: {buffer}}))});
       let encoder = device.createCommandEncoder();
       let pass = encoder.beginComputePass();
@@ -873,7 +915,18 @@ async function simulate(settings, run) {
       offset += count;
       logDebug("Batch", (batchNumber + 1), "done in", (performance.now() - batchStarted).toFixed(0), "ms");
       setProgress(90 * offset / totalSims, 100, "Batch " + (batchNumber + 1) + "/" + totalBatches + " complete");
-      await new Promise(resolve => requestAnimationFrame(resolve));
+      // Yield so the progress bar can paint, but NEVER pace the pipeline by
+      // the frame cost of the leaderboard DOM: after the first run the
+      // 1,600-row table repaints every frame, and a plain
+      // requestAnimationFrame await then resolves only after that paint,
+      // stretching each batch by its paint time (~2x slower runs after the
+      // first). Racing the frame against a fixed timeout keeps the vsync
+      // cadence when frames are cheap and caps the wait at BATCH_YIELD_MS
+      // when they are not.
+      await new Promise(resolve => {
+        const timeout = setTimeout(resolve, BATCH_YIELD_MS);
+        requestAnimationFrame(() => { clearTimeout(timeout); resolve(); });
+      });
     }
     if (run.cancelled) throw new Error("__CANCELLED__");
     setProgress(95, 100, "Computing quantiles on GPU...");
@@ -1148,38 +1201,58 @@ function renderHouseBadge(house) {
   return '<span class="badge"><span class="badge-chip ' + meta[0] + '">' + meta[1] + '</span><span class="badge-text">Buyer (' + escapeHtml(fund) + ")</span></span>";
 }
 
-function renderTable(selectTop) {
-  state.applied = captureAppliedControls();
-  updateSortIndicators();
-  const rows = displayedRows();
+// ---------------------------------------------------------------------------
+// Virtualized leaderboard rendering.
+//
+// Only the rows near the scroll position are in the DOM. Rendering all 5,040
+// rich rows at once produced a ~60k px-tall compositor layer that kept the
+// GPU process busy every frame; that work contended with the WebGPU compute
+// submissions and made every run after the first ~2x slower (measured: 1,600
+// rich rows visible = 0.84 s vs 0.31 s with the table hidden or windowed).
+// Spacer rows preserve the scrollbar geometry.
+// ---------------------------------------------------------------------------
+let windowedRows = [];
+let tableRowHeight = 0;
+
+function rowHtml(row, index) {
+  const selected = activeStrategy && row.name === activeStrategy.name ? ' class="selected-row"' : "";
+  return "<tr" + selected + ' data-name="' + escapeHtml(row.name) + '">' +
+    '<td class="mono" style="font-weight:700; color:var(--brand-navy)">' + (index + 1) + "</td>" +
+    "<td>" + renderHouseBadge(row.house) + "</td>" +
+    '<td><div class="badge-group">' + renderBadge(row.parts[2]) + "</div></td>" +
+    '<td><div class="badge-group">' + renderBadge(row.parts[3]) + "</div></td>" +
+    '<td><div class="badge-group">' + renderBadge(row.parts[4]) + "</div></td>" +
+    '<td class="right mono" style="color:var(--text-muted)">' + (row.buyAge == null ? "—" : row.buyAge.toFixed(1)) + "</td>" +
+    '<td class="right mono" style="color:var(--text-muted)">' + (row.p90BuyAge == null ? "—" : row.p90BuyAge.toFixed(1)) + "</td>" +
+    '<td class="right mono" style="color:var(--text-muted)">' + (row.mortgage == null ? "—" : money(row.mortgage)) + "</td>" +
+    '<td class="right mono" style="font-weight:700; color:var(--brand-green)">' + money(row.ce) + "/mo</td>" +
+    '<td class="right mono">' + money(row.median) + "/mo</td>" +
+    '<td class="right mono" style="color:' + uiSeverity(row.ui) + '">' + f2(row.ui) + "</td>" +
+    '<td class="right mono" style="color:var(--brand-amber); font-weight:600">' + money(row.floor) + "/mo</td>" +
+    '<td class="right mono">' + money(row.p90) + "/mo</td></tr>";
+}
+
+function spacerHtml(rows) {
+  return rows > 0 ? '<tr class="v-spacer" aria-hidden="true" style="border:0"><td colspan="12" style="height:' + Math.round(rows * (tableRowHeight || 38)) + 'px; padding:0; border:0; line-height:0"></td></tr>' : "";
+}
+
+function paintWindow(rows) {
   const body = byId("table-body");
-  const pill = document.querySelector('#seg-mix .seg-pill[data-mix="ALL"]');
-  if (pill) pill.textContent = "All (" + (state.results ? state.results.length : TOTAL_ALLOCATIONS).toLocaleString("en-US") + ")";
-
-  if (!rows.length) {
-    body.innerHTML = '<tr><td colspan="12" style="text-align:center; padding:32px; color:var(--text-muted); font-family:var(--font-mono)">' +
-      (state.results ? "No strategies match your criteria." : "No results yet — open Settings and press Simulate.") + "</td></tr>";
-    if (activeStrategy) drawDistributionChart();
-    return;
-  }
-
-  body.innerHTML = rows.map((row, index) => {
-    const selected = activeStrategy && row.name === activeStrategy.name ? ' class="selected-row"' : "";
-    return "<tr" + selected + " data-name=\"" + escapeHtml(row.name) + "\">" +
-      '<td class="mono" style="font-weight:700; color:var(--brand-navy)">' + (index + 1) + "</td>" +
-      "<td>" + renderHouseBadge(row.house) + "</td>" +
-      '<td><div class="badge-group">' + renderBadge(row.parts[2]) + "</div></td>" +
-      '<td><div class="badge-group">' + renderBadge(row.parts[3]) + "</div></td>" +
-      '<td><div class="badge-group">' + renderBadge(row.parts[4]) + "</div></td>" +
-      '<td class="right mono" style="color:var(--text-muted)">' + (row.buyAge == null ? "—" : row.buyAge.toFixed(1)) + "</td>" +
-      '<td class="right mono" style="color:var(--text-muted)">' + (row.mortgage == null ? "—" : money(row.mortgage)) + "</td>" +
-      '<td class="right mono" style="font-weight:700; color:var(--brand-green)">' + money(row.ce) + "/mo</td>" +
-      '<td class="right mono">' + money(row.median) + "/mo</td>" +
-      '<td class="right mono" style="color:' + uiSeverity(row.ui) + '">' + f2(row.ui) + "</td>" +
-      '<td class="right mono" style="color:var(--brand-amber); font-weight:600">' + money(row.floor) + "/mo</td>" +
-      '<td class="right mono">' + money(row.p90) + "/mo</td></tr>";
-  }).join("");
-
+  const wrap = document.querySelector(".table-wrap");
+  const rowH = tableRowHeight || 38;
+  const viewport = wrap && wrap.clientHeight ? wrap.clientHeight : 540;
+  const scrollTop = wrap ? wrap.scrollTop : 0;
+  const total = rows.length;
+  const top = Math.max(0, Math.floor(scrollTop / rowH) - 4);
+  const bottom = Math.min(total, top + Math.ceil(viewport / rowH) + 8);
+  let html = spacerHtml(top);
+  for (let i = top; i < bottom; i++) html += rowHtml(rows[i], i);
+  html += spacerHtml(total - bottom);
+  body.innerHTML = html;
+  // Rows have uniform markup, so one sample gives the exact row height and
+  // keeps the spacers and the scroll-to-row mapping true.
+  const sample = body.querySelector("tr[data-name]");
+  if (sample) tableRowHeight = sample.getBoundingClientRect().height || tableRowHeight;
   body.querySelectorAll("tr[data-name]").forEach(tr => {
     tr.addEventListener("click", () => {
       const name = tr.dataset.name;
@@ -1187,6 +1260,34 @@ function renderTable(selectTop) {
       if (strategy) selectStrategy(strategy);
     });
   });
+}
+
+function renderTable(selectTop) {
+  state.applied = captureAppliedControls();
+  updateSortIndicators();
+  const rows = displayedRows();
+  const body = byId("table-body");
+  const pill = document.querySelector('#seg-mix .seg-pill[data-mix="ALL"]');
+  if (pill) pill.textContent = "All (" + (state.results ? state.results.length : effectiveAllocationCount(leverageEnabled())).toLocaleString("en-US") + ")";
+
+  if (!rows.length) {
+    windowedRows = [];
+    body.innerHTML = '<tr><td colspan="12" style="text-align:center; padding:32px; color:var(--text-muted); font-family:var(--font-mono)">' +
+      (state.results ? "No strategies match your criteria." : "No results yet — open Settings and press Simulate.") + "</td></tr>";
+    if (activeStrategy) drawDistributionChart();
+    return;
+  }
+
+  windowedRows = rows;
+  // Windowed rendering (see the virtualization notes above); a fresh list
+  // (filters, search, sort, re-rank) starts at the top of the scroll area.
+  if (selectTop) {
+    const wrap = document.querySelector(".table-wrap");
+    if (wrap) wrap.scrollTop = 0;
+  }
+  const wasUnmeasured = !tableRowHeight;
+  paintWindow(rows);
+  if (rows.length && wasUnmeasured) paintWindow(rows);  // one correction pass with the measured row height
 
   // Selection policy: filter changes (selectTop) promote the top-ranked row
   // of the visible sub-table; otherwise keep the current selection while it
@@ -1437,6 +1538,8 @@ function resetDefaults() {
   byId("slider-gamma").value = String(DEFAULTS.gamma);
   byId("slider-lambda").value = "0";
   byId("slider-sim-count").value = String(simulationSliderPosition(DEFAULTS.simulations));
+  byId("chk-leverage").checked = false;
+  setText("val-leverage-count", effectiveAllocationCount(false).toLocaleString("en-US") + " allocations");
   byId("filter-house").value = "ALL";
   byId("filter-accum").value = "ALL";
   byId("table-search").value = "";
@@ -1470,6 +1573,12 @@ byId("slider-lambda").addEventListener("input", (e) => {
 byId("slider-sim-count").addEventListener("input", (e) => {
   setText("val-sim-count", parseInt(e.target.value).toLocaleString("en-US") + " Paths");
 });
+byId("chk-leverage").addEventListener("change", (e) => {
+  setText("val-leverage-count", effectiveAllocationCount(e.target.checked).toLocaleString("en-US") + " allocations");
+  // With no results cached yet, reflect the new strategy count in the
+  // segmented "All" pill; once a run exists the pill mirrors its results.
+  if (!state.results) renderTable();
+});
 
 ["inp-careerStartAge", "inp-retirementAge", "inp-pensionStartAge"].forEach(id => {
   byId(id).addEventListener("input", () => { updateLiveSettingsLabels(); updatePhaseLabels(); });
@@ -1486,6 +1595,22 @@ document.querySelectorAll("#seg-mix .seg-pill").forEach(btn => {
     renderTable(true);
   });
 });
+
+// Virtualized leaderboard: repaint only the visible window on scroll
+// (rAF-throttled; the full renderTable pipeline only runs on data changes).
+(function () {
+  const wrap = document.querySelector(".table-wrap");
+  if (!wrap) return;
+  let pending = false;
+  wrap.addEventListener("scroll", () => {
+    if (pending || !state.results) return;
+    pending = true;
+    requestAnimationFrame(() => {
+      pending = false;
+      if (state.results) paintWindow(windowedRows);
+    });
+  }, {passive: true});
+})();
 
 // Column headers: click cycles biggest -> smallest -> smallest -> biggest ->
 // default CE / rank order, applied to the currently filtered rows.
@@ -1542,6 +1667,7 @@ byId("slider-sim-count").value = String(simulationSliderPosition(DEFAULTS.simula
 updateGammaLabel();
 setText("val-lambda", "0.000 (Neutral)");
 setText("val-sim-count", DEFAULTS.simulations.toLocaleString("en-US") + " Paths");
+setText("val-leverage-count", effectiveAllocationCount(leverageEnabled()).toLocaleString("en-US") + " allocations");
 updateLiveSettingsLabels();
 updatePhaseLabels();
 // The settings dock opens by default; the toggle button stays in sync.

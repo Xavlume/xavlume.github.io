@@ -105,6 +105,11 @@ fn accumulate(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (simulation >= params.generate.z || house >= house_count() || path >= path_count) {
         return;
     }
+    // Leverage-off runs never reference the VEQT1.5/VEQT2 accumulation paths
+    // (codes 1/2), so their states are skipped entirely when dispatch.z is 0.
+    if (params.dispatch.z == 0u && (path == 1u || path == 2u)) {
+        return;
+    }
 
     var tfsa = 0.0;
     var rrsp = 0.0;

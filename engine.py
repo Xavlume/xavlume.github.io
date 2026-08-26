@@ -83,6 +83,7 @@ def make_params(
     sim_offset: int,
     seed: int = SEED,
     columns_per_workgroup: int = 1,
+    generate_leveraged: bool = True,
 ) -> bytes:
     """Build the 144-byte params buffer; layout identical to the browser's makeParams."""
     lc = config["lifecycle"]
@@ -127,7 +128,9 @@ def make_params(
         cma.extra_mer_20 / 12.0,
         co.layoff_annual_probability,
     ]
-    u32[32:36] = [columns_per_workgroup, 0, 0, 0]
+    # dispatch.z: 1 = generate the leveraged return series (VEQT1.5/VEQT2);
+    # the Python engine always runs the full 5,040-strategy space.
+    u32[32:36] = [columns_per_workgroup, 0, 1 if generate_leveraged else 0, 0]
     return params.tobytes()
 
 
