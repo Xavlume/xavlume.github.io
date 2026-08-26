@@ -37,6 +37,7 @@ DEFAULT_OUTPUT_PATH = ROOT / "index.html"
 MODEL_MARKER = "__MODEL_JSON__"
 SHADER_MARKER = "__SHADER_JSON__"
 QUANTILES_MARKER = "__QUANTILES_JSON__"
+BEQUEST_MARKER = "__BEQUEST_JSON__"
 
 RUNTIME_JS = r"""
 "use strict";
@@ -47,16 +48,18 @@ RUNTIME_JS = r"""
 //  1. It reads the calibrated model payload from the #model-data script tag.
 //  2. It builds the parameter buffers and runs the five WGSL compute passes
 //     (returns -> layoffs -> accumulation -> solver -> drawdowns) plus the
-//     GPU quantile reduction.
-//  3. Risk Aversion (gamma), Drawdown Aversion (lambda) and the strategy
-//     filters re-rank the table INSTANTLY from the cached 201-point quantile
-//     ladders (pure JavaScript, no GPU re-simulation):
-//         CE_adj = CE(gamma) x exp(-lambda x Composite UI)
+//     GPU quantile reduction and the terminal-estate (bequest) ladders.
+//  3. Risk Aversion (gamma), Drawdown Aversion (lambda), Bequest Intensity
+//     (theta) and Bequest Curvature (k) re-rank the table INSTANTLY from the
+//     cached 201-point quantile ladders (pure JavaScript, no GPU re-simulation):
+//         CE_adj = CE(gamma, theta, k) x exp(-lambda x Composite UI)
+//     where theta = k = 0 reduces CE(gamma, theta, k) to the base CE exactly.
 // ===========================================================================
 
 const MODEL = JSON.parse(document.getElementById("model-data").textContent);
 const SHADER_SOURCE = __SHADER_JSON__;
 const QUANTILES_SHADER_SOURCE = __QUANTILES_JSON__;
+const BEQUEST_SHADER_SOURCE = __BEQUEST_JSON__;
 const C = MODEL.constants;
 const DEFAULTS = MODEL.defaults;
 const TOTAL_ALLOCATIONS = MODEL.allocations.count;
@@ -508,6 +511,8 @@ function buildDynamicModel(config) {
     fhsaMaxBalance: config.fhsaMaxBalance,
     hbpMaxWithdrawal: config.hbpMaxWithdrawal,
     hbpRepaymentYears: config.hbpRepaymentYears,
+    propertyValue: config.propertyValue,
+    estateGridFractions: MODEL.constants.estateGridFractions || [],
   };
   const career = new Float32Array(constants.careerYears * 6);
   const salaries = new Array(constants.careerYears);
@@ -579,13 +584,17 @@ function buildDynamicModel(config) {
   for (let month = 0; month < constants.retireMonths; month++) cpmWeights[month] /= weightSum;
   const returnModel = calibrateReturnModel(config);
   // Append the 18 calibrated skew-t constants (xi, omega, delta, row-major
-  // Cholesky) after the tax tail, then the 10 house constants.
+  // Cholesky) after the tax tail, then the 11 house constants (index 10 =
+  // target property value, read only by the bequest estate pass) and the
+  // bequest estate-grid tail [grid count, fractions...] (mirror of
+  // calibration.build_model_buffer / bequest.wgsl estate_grid_offset()).
   const returnModelArray = [].concat(returnModel.xi, returnModel.omega, returnModel.delta, returnModel.cholesky);
   const houseConstantsArray = [
     constants.targetHouseCapital, constants.mortgagePrincipal, constants.mortgageMonthlyRate,
     constants.monthlyPropertyTaxesCondo, constants.monthlyMarketRent,
     constants.fhsaAnnualLimit, constants.fhsaMaxBalance, constants.hbpMaxWithdrawal,
-    constants.hbpRepaymentYears, C.houseCount
+    constants.hbpRepaymentYears, C.houseCount, constants.propertyValue,
+    constants.estateGridFractions.length, ...constants.estateGridFractions
   ];
   const staticValues = new Float32Array(career.length + month0.length + month1.length + taxValues.length + returnModelArray.length + houseConstantsArray.length);
   staticValues.set(career, 0); staticValues.set(month0, career.length); staticValues.set(month1, career.length + month0.length); staticValues.set(taxValues, career.length + month0.length + month1.length); staticValues.set(returnModelArray, career.length + month0.length + month1.length + taxValues.length); staticValues.set(houseConstantsArray, career.length + month0.length + month1.length + taxValues.length + returnModelArray.length);
@@ -723,7 +732,30 @@ async function createDeviceContext() {
     ]});
     const quantilePipelineLayout = device.createPipelineLayout({bindGroupLayouts: [quantileLayout]});
     const quantiles = device.createComputePipeline({layout: quantilePipelineLayout, compute: {module: quantilesShader, entryPoint: "quantiles"}});
-    const context = {device, layout, quantileLayout, generateReturns, generateLayoffs, accumulate, solve, trackDrawdowns, quantiles, limits: device.limits};
+    // Bequest module: separate 7-binding layout (0-4 read-only, 5-6 the
+    // read-write estate ladder output and the persistent accumulation
+    // histogram — two read-write bindings, within the AMD/D3D12 limit; the
+    // per-simulation inputs are packed into one sim_data buffer to stay
+    // within the max-8-storage-buffers-per-stage limit). Three entry points
+    // mirror the solver's batching so no single dispatch outlives the
+    // Windows TDR watchdog: bequest_reset zeroes the persistent histogram,
+    // bequest_walk accumulates one batch of lives per dispatch,
+    // bequest_final reduces the histogram to the 201-point ladders.
+    let bequestShader;
+    try {
+      bequestShader = device.createShaderModule({code: BEQUEST_SHADER_SOURCE});
+    } catch (err) {
+      logError("createShaderModule failed for the bequest pipeline:", err);
+      throw err;
+    }
+    const bequestLayout = device.createBindGroupLayout({entries: Array.from({length: 7}, (_, binding) => ({
+      binding, visibility, buffer: {type: binding === 5 || binding === 6 ? "storage" : "read-only-storage"}
+    }))});
+    const bequestPipelineLayout = device.createPipelineLayout({bindGroupLayouts: [bequestLayout]});
+    const bequestReset = device.createComputePipeline({layout: bequestPipelineLayout, compute: {module: bequestShader, entryPoint: "bequest_reset"}});
+    const bequestWalk = device.createComputePipeline({layout: bequestPipelineLayout, compute: {module: bequestShader, entryPoint: "bequest_walk"}});
+    const bequestFinal = device.createComputePipeline({layout: bequestPipelineLayout, compute: {module: bequestShader, entryPoint: "bequest_final"}});
+    const context = {device, layout, quantileLayout, generateReturns, generateLayoffs, accumulate, solve, trackDrawdowns, quantiles, bequestLayout, bequestReset, bequestWalk, bequestFinal, limits: device.limits};
     state.deviceContext = context;
     setStatus("WebGPU ready: " + state.adapterText, false);
     logInfo("WebGPU device context ready on", state.adapterText);
@@ -841,6 +873,12 @@ async function simulate(settings, run) {
   const totalMonths = dynamic.constants.totalMonths;
   const careerYears = dynamic.constants.careerYears;
   const houseCount = C.houseCount;
+  // The estate grid is a config constant (the fractions live in the model
+  // buffer tail), independent of (theta, k).
+  const estateGrid = Math.max(1, (dynamic.constants.estateGridFractions || []).length);
+  // Packed global per-simulation data for the bequest pass (returns, states,
+  // house outcomes) - sized here so the buffer log below can reference it.
+  const simDataWords = totalSims * totalMonths * RETURN_FUND_COUNT + houseCount * pathCount * totalSims * 4 + houseCount * totalSims * 2;
   const selected = selectedAllocationBuffer(allocationCount, dynamic.constants, leverage);
   const allocationBuffer = staticBuffer(device, selected.data);
   const modelBuffer = staticBuffer(device, dynamic.staticValues);
@@ -850,6 +888,9 @@ async function simulate(settings, run) {
     spending: (allocationCount * totalSims * 4 / 1048576).toFixed(1),
     drawdownReadback: (allocationCount * totalSims * 4 / 1048576).toFixed(1),
     quantileOutput: (allocationCount * 201 * 4 / 1048576).toFixed(1),
+    estateOutput: (allocationCount * estateGrid * 201 * 4 / 1048576).toFixed(1),
+    estateHist: (allocationCount * estateGrid * 514 * 4 / 1048576).toFixed(1),
+    estateInputs: (simDataWords * 4 / 1048576).toFixed(1),
     limit: (Math.min(device.limits.maxBufferSize, device.limits.maxStorageBufferBindingSize) / 1048576).toFixed(0)
   });
   const scratchBuffer = device.createBuffer({size: scratchSize, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC});
@@ -866,6 +907,20 @@ async function simulate(settings, run) {
   const dummyA = device.createBuffer({size: 4, usage: GPUBufferUsage.STORAGE});
   const dummyB = device.createBuffer({size: 4, usage: GPUBufferUsage.STORAGE});
   const batchBindings = [scratchBuffer, allocationBuffer, modelBuffer, dummyA, dummyB, spendingBuffer];
+  // Global packed copy of the per-batch scratch data for the terminal-estate
+  // (bequest) pass: monthly returns, retirement states and house outcomes,
+  // all indexed by the GLOBAL simulation id, in one buffer (mirrors the main
+  // module's scratch packing; keeps the bequest module within the max-8-
+  // storage-buffers-per-stage limit).
+  const simDataBuffer = device.createBuffer({size: simDataWords * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST});
+  const estateBuffer = device.createBuffer({size: allocationCount * estateGrid * 201 * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC});
+  const estateReadback = device.createBuffer({size: allocationCount * estateGrid * 201 * 4, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST});
+  // Persistent per-(allocation, grid) accumulation histogram: 512 fixed
+  // log2(estate+1) bins + exact min/max words. Zeroed once by bequest_reset,
+  // folded batch by batch by bequest_walk, reduced by bequest_final. The
+  // walk is batched exactly like the solver so no single dispatch outlives
+  // the Windows TDR watchdog.
+  const estateHistBuffer = device.createBuffer({size: allocationCount * estateGrid * 514 * 4, usage: GPUBufferUsage.STORAGE});
   const totalBatches = Math.ceil(totalSims / batchSize);
   let offset = 0;
   try {
@@ -877,7 +932,14 @@ async function simulate(settings, run) {
       const params = device.createBuffer({size: 144, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST});
       device.queue.writeBuffer(params, 0, makeParams(dynamic, totalSims, allocationCount, count, offset, columnsPerWorkgroup, leverage));
       const bindGroup = device.createBindGroup({layout: context.layout, entries: [params, ...batchBindings].map((buffer, binding) => ({binding, resource: {buffer}}))});
+      const bequestBindGroup = device.createBindGroup({layout: context.bequestLayout, entries: [params, spendingBuffer, simDataBuffer, allocationBuffer, modelBuffer, estateBuffer, estateHistBuffer].map((buffer, binding) => ({binding, resource: {buffer}}))});
       let encoder = device.createCommandEncoder();
+      // Zero the persistent bequest histograms before the first batch.
+      if (batchNumber === 0) {
+        let resetPass = encoder.beginComputePass();
+        resetPass.setPipeline(context.bequestReset); resetPass.setBindGroup(0, bequestBindGroup);
+        resetPass.dispatchWorkgroups(allocationCount * estateGrid, 1, 1); resetPass.end();
+      }
       let pass = encoder.beginComputePass();
       pass.setPipeline(context.generateReturns); pass.setBindGroup(0, bindGroup);
       pass.dispatchWorkgroups(Math.ceil(count * totalMonths / 64), 1, 1); pass.end();
@@ -895,6 +957,27 @@ async function simulate(settings, run) {
       pass = encoder.beginComputePass();
       pass.setPipeline(context.trackDrawdowns); pass.setBindGroup(0, bindGroup);
       pass.dispatchWorkgroups(Math.ceil(count / 64), dispatchAllocations, 1); pass.end();
+      // Persist this batch's returns / states / houses for the bequest estate
+      // pass (scratch is overwritten by the next batch). The scratch layout
+      // matches common.wgsl: returns [0, RET), states after layoffs, houses
+      // after states — all batch-local, hence the block copies into the
+      // global, totalSims-strided buffers.
+      encoder.copyBufferToBuffer(scratchBuffer, 0, simDataBuffer, offset * totalMonths * RETURN_FUND_COUNT * 4, count * totalMonths * RETURN_FUND_COUNT * 4);
+      const statesOffset = count * totalMonths * RETURN_FUND_COUNT + count * careerYears;
+      const housesOffset = statesOffset + houseCount * pathCount * count * 4;
+      const globalStatesOffset = totalSims * totalMonths * RETURN_FUND_COUNT;
+      for (let block = 0; block < houseCount * pathCount; block++) {
+        encoder.copyBufferToBuffer(scratchBuffer, (statesOffset + block * count * 4) * 4, simDataBuffer, (globalStatesOffset + block * totalSims * 4 + offset * 4) * 4, count * 16);
+      }
+      for (let h = 0; h < houseCount; h++) {
+        encoder.copyBufferToBuffer(scratchBuffer, (housesOffset + h * count * 2) * 4, simDataBuffer, (globalStatesOffset + houseCount * pathCount * totalSims * 4 + h * totalSims * 2 + offset * 2) * 4, count * 8);
+      }
+      // Bequest walk for THIS batch only (w = f * w*, estates folded into the
+      // persistent histogram): bounded per-dispatch cost like the solver, so
+      // the Windows TDR watchdog is never hit even at 10k paths.
+      let walkPass = encoder.beginComputePass();
+      walkPass.setPipeline(context.bequestWalk); walkPass.setBindGroup(0, bequestBindGroup);
+      walkPass.dispatchWorkgroups(allocationCount * estateGrid, 1, 1); walkPass.end();
       const batchDrawdownOffset = count * totalMonths * RETURN_FUND_COUNT + count * careerYears + houseCount * pathCount * count * 4 + houseCount * count * 2;
       encoder.copyBufferToBuffer(scratchBuffer, batchDrawdownOffset * 4, drawdownReadback, offset * allocationCount * 4, count * allocationCount * 4);
       const batchHouseOffset = count * totalMonths * RETURN_FUND_COUNT + count * careerYears + houseCount * pathCount * count * 4;
@@ -945,6 +1028,27 @@ async function simulate(settings, run) {
     await quantileReadback.mapAsync(GPUMapMode.READ);
     const quantileData = new Float32Array(quantileReadback.getMappedRange()).slice();
     quantileReadback.unmap();
+    // Terminal-estate (bequest) ladders: every batch already folded its lives'
+    // estates into the persistent histogram (bequest_walk); this tiny final
+    // pass locates the 201 quantiles per (allocation, grid fraction). The
+    // ladders are preference-independent — (theta, k) enter only the JS
+    // re-rank later — so they are cached like the spending quantiles and
+    // never touch the solver.
+    setProgress(97, 100, "Computing terminal-estate ladders on GPU...");
+    const bequestParams = device.createBuffer({size: 144, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST});
+    device.queue.writeBuffer(bequestParams, 0, makeParams(dynamic, totalSims, allocationCount, totalSims, 0, 1));
+    const bequestFinalBindGroup = device.createBindGroup({layout: context.bequestLayout, entries: [bequestParams, spendingBuffer, simDataBuffer, allocationBuffer, modelBuffer, estateBuffer, estateHistBuffer].map((buffer, binding) => ({binding, resource: {buffer}}))});
+    const bequestEncoder = device.createCommandEncoder();
+    let bequestPass = bequestEncoder.beginComputePass();
+    bequestPass.setPipeline(context.bequestFinal); bequestPass.setBindGroup(0, bequestFinalBindGroup);
+    bequestPass.dispatchWorkgroups(allocationCount * estateGrid, 1, 1); bequestPass.end();
+    bequestEncoder.copyBufferToBuffer(estateBuffer, 0, estateReadback, 0, allocationCount * estateGrid * 201 * 4);
+    device.queue.submit([bequestEncoder.finish()]);
+    await device.queue.onSubmittedWorkDone();
+    bequestParams.destroy();
+    await estateReadback.mapAsync(GPUMapMode.READ);
+    const estateData = new Float32Array(estateReadback.getMappedRange()).slice();
+    estateReadback.unmap();
     await drawdownReadback.mapAsync(GPUMapMode.READ);
     const drawdownData = new Float32Array(drawdownReadback.getMappedRange());
     const uiMeans = new Array(allocationCount).fill(0);
@@ -988,7 +1092,12 @@ async function simulate(settings, run) {
       const parts = names[index].split("_");
       const houseIndex = Math.max(0, C.houses.indexOf(parts[0] + "_" + parts[1]));
       const hs = houseStats[houseIndex];
-      results.push({name: names[index], quantiles, median: quantiles[100], ui: uiMeans[index],
+      const estate = new Array(estateGrid);
+      for (let g = 0; g < estateGrid; g++) {
+        const base = (index * estateGrid + g) * 201;
+        estate[g] = new Float32Array(estateData.subarray(base, base + 201));
+      }
+      results.push({name: names[index], quantiles, median: quantiles[100], ui: uiMeans[index], estate,
                     buyAge: hs.buyAge, p90BuyAge: hs.p90BuyAge, mortgage: hs.mortgage});
     }
     return {results, names, dynamic};
@@ -1002,6 +1111,7 @@ async function simulate(settings, run) {
     scratchBuffer.destroy(); spendingBuffer.destroy();
     quantileBuffer.destroy(); quantileReadback.destroy();
     drawdownReadback.destroy(); houseReadback.destroy();
+    simDataBuffer.destroy(); estateBuffer.destroy(); estateReadback.destroy(); estateHistBuffer.destroy();
     dummyA.destroy(); dummyB.destroy();
   }
 }
@@ -1036,20 +1146,74 @@ function ceForQuantiles(quantiles, gamma, dynamic) {
   return base * computeKappa(gamma, dynamic);
 }
 
+// ---------------------------------------------------------------------------
+// Bequest-adjusted CE. The cached estate ladders (preference-independent,
+// computed once per run by bequest.wgsl) hold the 201-point quantile ladder
+// of the tax-adjusted terminal estate at each spending fraction f of the
+// solved w*. With the De Nardi-style bequest utility added to the CRRA
+// consumption utility, the strategy's base CE is the best over the grid:
+//     CE_beq(f) = [ mean_i ( (f * q_i * kappa)^(1-gamma)
+//                           + theta_actual * (b_f,i + k)^(1-gamma) ) ]^(1/(1-gamma))
+// The theta SLIDER is normalized so 0.5 always means parity, at any gamma:
+//     theta_actual = 2 * parity * theta_slider
+//     parity = (estate_ref / (retireMonths * spending_ref))^(gamma - 1)
+// i.e. the intensity at which the bequest term equals the consumption term
+// for a reference life (a bequestParityReferenceEstate estate vs.
+// bequestParityReferenceSpending of monthly spending, both in the tool's
+// monthly-equivalent units). 0 = no motive, 0.5 = parity, 1 = twice parity.
+// The estate is valued in monthly-spending-equivalent units (lump sum spread
+// over the retirement horizon), and the luxury threshold k is clamped to a
+// positive floor when theta > 0: CRRA utility of a zero estate is -infinity
+// for gamma > 1 otherwise (that is exactly the role of k in De Nardi 2004).
+// For theta_slider = 0 the grid term collapses to f * CE_base, whose maximum
+// sits exactly at f = 1, i.e. the unadjusted CE — the default (theta = k = 0)
+// is a pure identity.
+// ---------------------------------------------------------------------------
+function bequestCeForStrategy(strategy, gamma, theta, k, dynamic) {
+  if (!strategy.estate || strategy.estate.length === 0) return ceForQuantiles(strategy.quantiles, gamma, dynamic);
+  const kappa = computeKappa(gamma, dynamic);
+  const exponent = 1 - gamma;
+  const logMode = Math.abs(exponent) < 1e-4;
+  const q = strategy.quantiles;
+  const fractions = dynamic.constants.estateGridFractions || [];
+  const months = Math.max(1, dynamic.constants.retireMonths);
+  const kEff = Math.max(k, theta > 0 ? (C.minBequestCurvature || 10000) : 0) / months;
+  const parity = Math.pow(C.bequestParityReferenceEstate / (months * C.bequestParityReferenceSpending), gamma - 1);
+  const thetaActual = 2 * parity * theta;
+  let best = -Infinity;
+  for (let g = 0; g < strategy.estate.length; g++) {
+    const f = fractions[g] != null ? fractions[g] : 1;
+    const ladder = strategy.estate[g];
+    let sum = 0;
+    for (let i = 1; i < 200; i++) {
+      const c = Math.max(f * q[i] * kappa, 1e-6);
+      const b = Math.max(ladder[i] / months + kEff, 1e-6);
+      sum += logMode ? Math.log(c) + thetaActual * Math.log(b) : Math.pow(c, exponent) + thetaActual * Math.pow(b, exponent);
+    }
+    const ce = logMode ? Math.exp(sum / 199) : Math.pow(sum / 199, 1 / exponent);
+    if (ce > best) best = ce;
+  }
+  return best;
+}
+
 function lowerBound(values, target) {
   let low = 0, high = values.length;
   while (low < high) { const middle = (low + high) >> 1; if (values[middle] < target) low = middle + 1; else high = middle; }
   return low;
 }
 
-// Base CE depends only on (gamma, quantiles, dynamic model), so the per-row
-// CRRA evaluation is cached per gamma value on the results array. The cache
-// is naturally invalidated when a new run replaces state.results.
-function ceBasesForGamma(gamma, dynamic) {
+// Base CE depends only on (gamma, theta, k, quantiles, estate ladders,
+// dynamic model), so the per-row CRRA evaluation is cached per control
+// snapshot on the results array. The cache is naturally invalidated when a
+// new run replaces state.results. Theta = 0 keeps the exact unadjusted path.
+function ceBasesForGamma(gamma, theta, k, dynamic) {
   const cache = state.results._ceCache;
-  if (cache && cache.gamma === gamma) return cache.values;
-  const values = state.results.map(s => ceForQuantiles(s.quantiles, gamma, dynamic));
-  state.results._ceCache = {gamma, values};
+  if (cache && cache.gamma === gamma && cache.theta === theta && cache.k === k) return cache.values;
+  const bequestOn = theta > 0 && !!(state.results[0] && state.results[0].estate && state.results[0].estate.length);
+  const values = bequestOn
+    ? state.results.map(s => bequestCeForStrategy(s, gamma, theta, k, dynamic))
+    : state.results.map(s => ceForQuantiles(s.quantiles, gamma, dynamic));
+  state.results._ceCache = {gamma, theta, k, values};
   return values;
 }
 
@@ -1063,6 +1227,8 @@ function captureAppliedControls() {
   return {
     gamma: Number(byId("slider-gamma").value),
     uiLambda: Number(byId("slider-lambda").value),
+    theta: Number(byId("slider-theta").value) || 0,
+    k: Number(byId("slider-k").value) || 0,
     floorP: DEFAULTS.floorPercentile,
     house: byId("filter-house").value,
     accum: byId("filter-accum").value,
@@ -1076,10 +1242,12 @@ function displayedRows() {
   const applied = state.applied || captureAppliedControls();
   const gamma = applied.gamma;
   const uiLambda = applied.uiLambda || 0;
+  const theta = applied.theta || 0;
+  const k = applied.k || 0;
   const floorP = applied.floorP;
   const dynamic = state.dynamic || buildDynamicModel(readModelInputs());
   const floorIndex = Math.round(floorP * 2);
-  const ceBases = ceBasesForGamma(gamma, dynamic);
+  const ceBases = ceBasesForGamma(gamma, theta, k, dynamic);
 
   let rows = state.results.map((strategy, index) => {
     const q = strategy.quantiles;
@@ -1533,10 +1701,28 @@ function updateGammaLabel() {
   setText("kpi-ce-sub", "The steady monthly income you would view as equally desirable to this strategy's fluctuating market outcomes, given your risk aversion (\u03B3 = " + g.toFixed(1) + ").");
 }
 
+function updateThetaLabel() {
+  const t = Number(byId("slider-theta").value) || 0;
+  let label = "0.00 (Off)";
+  if (t > 0) {
+    if (Math.abs(t - 0.5) < 1e-9) label = "0.50 (Balanced)";
+    else if (t < 0.5) label = t.toFixed(2) + " (Mild)";
+    else label = t.toFixed(2) + " (Strong)";
+  }
+  setText("val-theta", label);
+}
+
+function updateKLabel() {
+  const k = Number(byId("slider-k").value) || 0;
+  setText("val-k", k === 0 ? "$0" : money(k));
+}
+
 function resetDefaults() {
   applyModelToInputs(MODEL.inputs);
   byId("slider-gamma").value = String(DEFAULTS.gamma);
   byId("slider-lambda").value = "0";
+  byId("slider-theta").value = String(DEFAULTS.bequestIntensity || 0);
+  byId("slider-k").value = String(DEFAULTS.bequestCurvature || 0);
   byId("slider-sim-count").value = String(simulationSliderPosition(DEFAULTS.simulations));
   byId("chk-leverage").checked = false;
   setText("val-leverage-count", effectiveAllocationCount(false).toLocaleString("en-US") + " allocations");
@@ -1547,6 +1733,8 @@ function resetDefaults() {
   state.sort = { column: "ce", ascending: false, active: false };
   updateSortIndicators();
   updateGammaLabel();
+  updateThetaLabel();
+  updateKLabel();
   setText("val-lambda", "0.000 (Neutral)");
   setText("val-sim-count", DEFAULTS.simulations.toLocaleString("en-US") + " Paths");
   updateLiveSettingsLabels();
@@ -1570,6 +1758,8 @@ byId("slider-lambda").addEventListener("input", (e) => {
   const l = parseFloat(e.target.value);
   setText("val-lambda", l === 0 ? "0.000 (Neutral)" : l.toFixed(3) + " (Active)");
 });
+byId("slider-theta").addEventListener("input", updateThetaLabel);
+byId("slider-k").addEventListener("input", updateKLabel);
 byId("slider-sim-count").addEventListener("input", (e) => {
   setText("val-sim-count", parseInt(e.target.value).toLocaleString("en-US") + " Paths");
 });
@@ -1663,8 +1853,12 @@ window.addEventListener("resize", drawDistributionChart);
 applyModelToInputs(MODEL.inputs);
 byId("slider-gamma").value = String(DEFAULTS.gamma);
 byId("slider-lambda").value = "0";
+byId("slider-theta").value = String(DEFAULTS.bequestIntensity || 0);
+byId("slider-k").value = String(DEFAULTS.bequestCurvature || 0);
 byId("slider-sim-count").value = String(simulationSliderPosition(DEFAULTS.simulations));
 updateGammaLabel();
+updateThetaLabel();
+updateKLabel();
 setText("val-lambda", "0.000 (Neutral)");
 setText("val-sim-count", DEFAULTS.simulations.toLocaleString("en-US") + " Paths");
 setText("val-leverage-count", effectiveAllocationCount(leverageEnabled()).toLocaleString("en-US") + " allocations");
@@ -1793,10 +1987,13 @@ def build_html(price_path=DEFAULT_PRICE_PATH, output_path=DEFAULT_OUTPUT_PATH, c
     sources = engine.load_shader_sources()
     shader_json = json.dumps(engine._main_shader(sources), ensure_ascii=True)
     quantiles_json = json.dumps(sources[engine.QUANTILES_SHADER], ensure_ascii=True)
+    bequest_json = json.dumps(sources[engine.BEQUEST_SHADER], ensure_ascii=True)
     model_json = json.dumps(payload, separators=(",", ":"), allow_nan=False).replace("</", "<\\/")
 
     runtime_js = RUNTIME_JS
-    runtime_js = runtime_js.replace(SHADER_MARKER, shader_json).replace(QUANTILES_MARKER, quantiles_json)
+    runtime_js = runtime_js.replace(SHADER_MARKER, shader_json)
+    runtime_js = runtime_js.replace(QUANTILES_MARKER, quantiles_json)
+    runtime_js = runtime_js.replace(BEQUEST_MARKER, bequest_json)
 
     html = TEMPLATE_PATH.read_text(encoding="utf-8")
     html = _inject_status_strip(html, payload)

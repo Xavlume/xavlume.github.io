@@ -42,6 +42,7 @@ DEFAULT_PRICE_PATH = ROOT / "downloaded_prices.csv"
 # Pass files concatenated in this order form the main compute module.
 MAIN_SHADER_PASSES = ("common.wgsl", "returns.wgsl", "accumulation.wgsl", "solver.wgsl", "drawdown_ui.wgsl")
 QUANTILES_SHADER = "quantiles.wgsl"
+BEQUEST_SHADER = "bequest.wgsl"
 
 BISECTION_STEPS = 24
 SEED = 42
@@ -58,6 +59,7 @@ class SimulationResult:
     quantiles: np.ndarray         # (allocations, 201) monthly spending quantiles
     ui_means: np.ndarray          # (allocations,) mean Composite Ulcer Index
     house_outcomes: np.ndarray    # (houses, simulations, 2) (bought, buy_month)
+    estate: np.ndarray            # (allocations, grid, 201) terminal-estate quantiles
     elapsed: float                # wall-clock seconds
     adapter: Dict[str, object] = field(default_factory=dict)
 
@@ -68,6 +70,7 @@ def load_shader_sources() -> Dict[str, str]:
     for name in MAIN_SHADER_PASSES:
         sources[name] = (SHADER_DIR / name).read_text(encoding="ascii")
     sources[QUANTILES_SHADER] = (SHADER_DIR / QUANTILES_SHADER).read_text(encoding="ascii")
+    sources[BEQUEST_SHADER] = (SHADER_DIR / BEQUEST_SHADER).read_text(encoding="ascii")
     return sources
 
 
@@ -206,6 +209,37 @@ class Engine:
             compute={"module": self.quantile_module, "entry_point": "quantiles"},
         )
 
+        # Bequest module: separate 7-binding layout (0-4 read-only, 5-6 the
+        # read-write estate ladder output and the persistent accumulation
+        # histogram - two read-write bindings, within the AMD/D3D12 limit; the
+        # per-simulation inputs are packed into one sim_data buffer to stay
+        # within the max-8-storage-buffers-per-stage limit). Three entry
+        # points mirror the solver's batching so no single dispatch outlives
+        # the Windows TDR watchdog: bequest_reset zeroes the persistent
+        # histogram, bequest_walk accumulates one batch of lives per dispatch,
+        # bequest_final reduces the histogram to the 201-point ladders.
+        bequest_layout_entries = [
+            {"binding": b, "visibility": visibility, "buffer": {"type": "read-only-storage"}}
+            for b in range(5)
+        ] + [
+            {"binding": 5, "visibility": visibility, "buffer": {"type": "storage"}},
+            {"binding": 6, "visibility": visibility, "buffer": {"type": "storage"}},
+        ]
+        self.bequest_layout = self.device.create_bind_group_layout(entries=bequest_layout_entries)
+        self.bequest_pipeline_layout = self.device.create_pipeline_layout(
+            bind_group_layouts=[self.bequest_layout]
+        )
+        self.bequest_module = self.device.create_shader_module(
+            code=sources[BEQUEST_SHADER]
+        )
+        self.bequest_pipelines = {
+            name: self.device.create_compute_pipeline(
+                layout=self.bequest_pipeline_layout,
+                compute={"module": self.bequest_module, "entry_point": name},
+            )
+            for name in ("bequest_reset", "bequest_walk", "bequest_final")
+        }
+
     @property
     def adapter_info(self) -> Dict[str, object]:
         try:
@@ -336,6 +370,39 @@ class Engine:
         house_outcomes = np.zeros((house_count, simulations, 2), dtype=np.float32)
         ui_scores = np.zeros((simulations, n_allocations), dtype=np.float32)
         started = time.perf_counter()
+
+        # Global packed copy of the per-batch scratch data needed by the
+        # bequest estate pass: monthly returns, retirement states and house
+        # outcomes, all indexed by the GLOBAL simulation id, in one buffer
+        # (mirrors the main module's scratch packing; keeps the bequest
+        # module within the max-8-storage-buffers-per-stage limit). The
+        # bequest walk itself is dispatched per batch (like the solver) and
+        # accumulates into the persistent histogram, so no single dispatch
+        # outlives the TDR watchdog; only the tiny reset/final passes run
+        # once.
+        estate_grid = len(self.config["bequest"].estate_grid_fractions)
+        estate_hist_words = n_allocations * estate_grid * 514  # 512 bins + min + max
+        sim_data_words = (
+            simulations * total_months * len(cfg.FUNDS)
+            + house_count * path_count * simulations * 4
+            + house_count * simulations * 2
+        )
+        sim_data_buffer = self.device.create_buffer(
+            size=sim_data_words * 4,
+            usage=storage_usage | wgpu.BufferUsage.COPY_DST,
+        )
+        estate_buffer = self.device.create_buffer(
+            size=n_allocations * estate_grid * 201 * 4,
+            usage=storage_usage | wgpu.BufferUsage.COPY_SRC,
+        )
+        estate_hist_buffer = self._buffer(
+            np.zeros(estate_hist_words, dtype=np.uint32), storage_usage
+        )
+        estate_readback = self.device.create_buffer(
+            size=n_allocations * estate_grid * 201 * 4,
+            usage=wgpu.BufferUsage.MAP_READ | wgpu.BufferUsage.COPY_DST,
+        )
+
         offset = 0
         while offset < simulations:
             count = min(self.batch_size, simulations - offset)
@@ -355,7 +422,26 @@ class Engine:
                     )
                 ],
             )
+            bequest_bind_group = self.device.create_bind_group(
+                layout=self.bequest_layout,
+                entries=[
+                    {"binding": index, "resource": {"buffer": buffer}}
+                    for index, buffer in enumerate(
+                        [
+                            params, spending_buffer, sim_data_buffer,
+                            allocation_buffer, model_buffer, estate_buffer, estate_hist_buffer,
+                        ]
+                    )
+                ],
+            )
             encoder = self.device.create_command_encoder()
+            # Zero the persistent bequest histograms before the first batch.
+            if offset == 0:
+                pass_ = encoder.begin_compute_pass()
+                pass_.set_pipeline(self.bequest_pipelines["bequest_reset"])
+                pass_.set_bind_group(0, bequest_bind_group)
+                pass_.dispatch_workgroups(n_allocations * max(estate_grid, 1), 1, 1)
+                pass_.end()
             for name, workgroups in (
                 ("generate_returns", (count * total_months + 63) // 64),
                 ("generate_layoffs", (count * career_years + 63) // 64),
@@ -371,6 +457,36 @@ class Engine:
                 else:
                     pass_.dispatch_workgroups(workgroups, n_allocations if name in ("solve", "track_drawdowns") else 1, 1)
                 pass_.end()
+            # Persist this batch's returns / states / houses for the bequest
+            # estate pass (scratch itself is overwritten by the next batch).
+            returns_bytes = count * total_months * len(cfg.FUNDS) * 4
+            states_offset = count * total_months * len(cfg.FUNDS) + count * career_years
+            houses_offset = states_offset + house_count * path_count * count * 4
+            global_states_offset = simulations * total_months * len(cfg.FUNDS)
+            encoder.copy_buffer_to_buffer(
+                scratch, 0, sim_data_buffer, offset * total_months * len(cfg.FUNDS) * 4, returns_bytes
+            )
+            for block in range(house_count * path_count):
+                encoder.copy_buffer_to_buffer(
+                    scratch, (states_offset + block * count * 4) * 4,
+                    sim_data_buffer, (global_states_offset + block * simulations * 4 + offset * 4) * 4,
+                    count * 16,
+                )
+            for h in range(house_count):
+                encoder.copy_buffer_to_buffer(
+                    scratch, (houses_offset + h * count * 2) * 4,
+                    sim_data_buffer,
+                    (global_states_offset + house_count * path_count * simulations * 4 + h * simulations * 2 + offset * 2) * 4,
+                    count * 8,
+                )
+            # Bequest walk for THIS batch only (w = f * w*, estates folded
+            # into the persistent histogram) - bounded per-dispatch cost like
+            # the solver, so the Windows TDR watchdog is never hit.
+            pass_ = encoder.begin_compute_pass()
+            pass_.set_pipeline(self.bequest_pipelines["bequest_walk"])
+            pass_.set_bind_group(0, bequest_bind_group)
+            pass_.dispatch_workgroups(n_allocations * max(estate_grid, 1), 1, 1)
+            pass_.end()
             self.device.queue.submit([encoder.finish()])
             offset += count
 
@@ -424,6 +540,11 @@ class Engine:
 
         ui_means = ui_scores.mean(axis=0)
         quantiles = self._quantiles_on_gpu(spending, simulations, n_allocations)
+        estate = self._estate_final_on_gpu(
+            spending_buffer, sim_data_buffer,
+            allocation_buffer, model_buffer, estate_buffer, estate_hist_buffer,
+            estate_readback, simulations, n_allocations, estate_grid,
+        )
         elapsed = time.perf_counter() - started
         return SimulationResult(
             names=names,
@@ -431,6 +552,7 @@ class Engine:
             quantiles=quantiles,
             ui_means=ui_means,
             house_outcomes=house_outcomes,
+            estate=estate,
             elapsed=elapsed,
             adapter=self.adapter_info,
         )
@@ -476,6 +598,65 @@ class Engine:
         ).copy()
         quantile_readback.unmap()
         return data.reshape(n_allocations, 201)
+
+    # -- GPU terminal-estate reduction (bequest ladders) ---------------------
+    def _estate_final_on_gpu(
+        self,
+        spending_buffer,
+        sim_data_buffer,
+        allocation_buffer,
+        model_buffer,
+        estate_buffer,
+        estate_hist_buffer,
+        estate_readback,
+        simulations: int,
+        n_allocations: int,
+        estate_grid: int,
+    ) -> np.ndarray:
+        """Reduce the accumulated estate histogram to (allocations, grid, 201) quantiles.
+
+        The per-batch bequest_walk dispatches (inside ``run``) already folded
+        every life's estate into the persistent histogram; this tiny final
+        pass locates the 201 quantiles and copies the ladders back to CPU.
+        """
+        wgpu = self.wgpu
+        storage_usage = wgpu.BufferUsage.STORAGE
+        params = self._buffer(
+            np.frombuffer(
+                make_params(self.config, simulations, n_allocations, simulations, 0, seed=self.seed),
+                dtype=np.uint8,
+            ),
+            storage_usage,
+        )
+        bind_group = self.device.create_bind_group(
+            layout=self.bequest_layout,
+            entries=[
+                {"binding": index, "resource": {"buffer": buffer}}
+                for index, buffer in enumerate(
+                    [
+                        params, spending_buffer, sim_data_buffer,
+                        allocation_buffer, model_buffer, estate_buffer, estate_hist_buffer,
+                    ]
+                )
+            ],
+        )
+        encoder = self.device.create_command_encoder()
+        pass_ = encoder.begin_compute_pass()
+        pass_.set_pipeline(self.bequest_pipelines["bequest_final"])
+        pass_.set_bind_group(0, bind_group)
+        pass_.dispatch_workgroups(n_allocations * max(estate_grid, 1), 1, 1)
+        pass_.end()
+        encoder.copy_buffer_to_buffer(
+            estate_buffer, 0, estate_readback, 0, n_allocations * estate_grid * 201 * 4
+        )
+        self.device.queue.submit([encoder.finish()])
+        estate_readback.map_sync(wgpu.MapMode.READ)
+        data = np.frombuffer(
+            estate_readback.read_mapped(0, n_allocations * estate_grid * 201 * 4),
+            dtype=np.float32,
+        ).copy()
+        estate_readback.unmap()
+        return data.reshape(n_allocations, estate_grid, 201)
 
 
 def _allocation_selection(count: int) -> List[int]:

@@ -132,8 +132,10 @@ fn career_scalar(year: u32, index: u32) -> f32 {
     return model_values[year * 6u + index];
 }
 
-// Ten house constants appended after the 54-value tax tail and the 18
-// calibrated skew-t constants:
+// Eleven house constants appended after the 54-value tax tail and the 18
+// calibrated skew-t constants (index 10 = the target property value, read
+// only by the bequest estate pass), followed by the bequest estate-grid tail
+// [grid count, spending fractions...] consumed only by bequest.wgsl:
 //   0 target house capital (down payment + closing costs)
 //   1 mortgage principal
 //   2 monthly real mortgage rate
@@ -144,6 +146,7 @@ fn career_scalar(year: u32, index: u32) -> f32 {
 //   7 HBP maximum withdrawal
 //   8 HBP repayment years
 //   9 house strategy count
+//  10 target property value (bequest home equity)
 fn house_const_at(index: u32) -> f32 {
     let offset = career_years() * 6u + params.solver.x * 8u + 54u + 18u;
     return model_values[offset + index];

@@ -151,6 +151,38 @@ wealth, so planned decumulation cannot masquerade as a drawdown), with
 `UI_comp = 0.60·UI_bridge + 0.25·UI_post + 0.15·UI_accum`
 (re-normalized to `(0, 0.65, 0.35)` when the bridge phase is empty).
 
+### Bequest preferences (estate-adjusted CE)
+
+The *Risk & Estate Preferences* panel adds a De Nardi-style bequest motive on
+top of the solved w\*. A dedicated GPU pass re-walks every simulated life at
+fractions `f` of its solved w\* (`0.5 … 1.0`) and records the tax-adjusted
+estate at 95: **TFSA** liquidated 100% tax-free, **non-registered** gains
+taxed at the capital-gains inclusion rate (50%), **RRSP/RRIF** fully taxed at
+the top marginal bracket (deemed disposition at death), and **home equity**
+principal-residence-exempt (value fixed at the target property value; the
+mortgage amortizes to zero by retirement). The engine rolls any FHSA balance
+into the RRSP by age 40 / retirement, so no separate FHSA account exists at
+death. The solver is untouched — the bequest ladders are preference-
+independent, so moving the **Bequest Intensity θ** and **Bequest Curvature k**
+sliders re-ranks the table instantly from the cached ladders:
+
+```
+CE_beq = max_f [ mean_i ( (f·q_i·κ)^(1−γ) + θ·(b_{f,i} + k)^(1−γ) ) ]^(1/(1−γ))
+```
+
+The estate is valued in monthly-spending-equivalent units (lump ÷ retirement
+months), and the θ slider is normalized so **0.5 always means parity, at any
+γ**: the actual intensity is `θ = 2·θ_parity·slider` with
+`θ_parity = (b_ref / (H·c_ref))^(γ−1)` — the level at which the bequest term
+equals the consumption term for a reference life (`b_ref = $500k` estate vs.
+`c_ref = $5,000/mo` spending). 0 = no motive, 0.5 = parity, 1 = twice parity.
+k is clamped to a $10k floor whenever θ > 0 — a zero estate has infinite CRRA
+disutility otherwise (precisely the role of De Nardi's k). θ = k = 0 reduces
+to the unadjusted CE exactly. The shipped defaults (γ = 4, θ = 0.5, k =
+$200k) approximate the De Nardi–French–Jones (2010) calibration (γ ≈ 3.84,
+k ≈ $273k in 2006 dollars, θ ≈ 2360 in their annual/thousands-of-dollars
+units — 0.5 on the parity-normalized slider plays the same role).
+
 ## Design principles
 
 * **One source of truth.** Every fiscal rule, CMA, real-estate number and

@@ -545,7 +545,12 @@ def tax_rrif_factor(tax: cfg.TaxFiscalConfig, age: int) -> float:
 
 
 def house_constants(config) -> np.ndarray:
-    """The ten f32 house constants appended to the model buffer."""
+    """The eleven f32 house constants appended to the model buffer.
+
+    Index 10 (the target property value) is consumed only by the bequest
+    estate walk (principal-residence-exempt home equity at death); the main
+    pipeline never reads past index 9.
+    """
     lc = config["lifecycle"]
     hg = config["housing"]
     target_capital = hg.property_value * hg.down_payment_fraction + hg.closing_costs
@@ -563,6 +568,7 @@ def house_constants(config) -> np.ndarray:
             hg.hbp_max_withdrawal,
             float(hg.hbp_repayment_years),
             float(cfg.HOUSE_COUNT),
+            hg.property_value,
         ],
         dtype=np.float32,
     )
@@ -575,6 +581,7 @@ def lifecycle_constants(config) -> Dict[str, object]:
     hg = config["housing"]
     tax = config["tax"]
     cma = config["cma"]
+    beq = config["bequest"]
     tables = build_model_tables(config)
 
     return {
@@ -622,6 +629,11 @@ def lifecycle_constants(config) -> Dict[str, object]:
         "fhsaMaxBalance": float(hg.fhsa_max_balance),
         "hbpMaxWithdrawal": float(hg.hbp_max_withdrawal),
         "hbpRepaymentYears": hg.hbp_repayment_years,
+        "propertyValue": float(hg.property_value),
+        "estateGridFractions": list(beq.estate_grid_fractions),
+        "minBequestCurvature": float(beq.min_bequest_curvature),
+        "bequestParityReferenceEstate": float(beq.parity_reference_estate),
+        "bequestParityReferenceSpending": float(beq.parity_reference_spending_monthly),
     }
 
 
@@ -874,7 +886,8 @@ def build_model_buffer(config, price_path) -> np.ndarray:
         [*, *+retire*4)          month1 rows
         [*, *+54)                tax values
         [*, *+18)                skew-t constants (xi, omega, delta, Cholesky)
-        [*, *+10)                house constants
+        [*, *+11)                house constants (index 10 = target property value)
+        [*, *+1+grid)            bequest estate-grid tail: [grid count, fractions...]
     """
     tables = build_model_tables(config)
     returns_df = load_returns(price_path)
@@ -883,6 +896,7 @@ def build_model_buffer(config, price_path) -> np.ndarray:
         config["calibration"],
         config["cma"],
     )
+    beq = config["bequest"]
     return_model = np.concatenate(
         [
             model["xi"].astype(np.float64),
@@ -899,6 +913,13 @@ def build_model_buffer(config, price_path) -> np.ndarray:
             tables["tax_values"].reshape(-1),
             return_model,
             house_constants(config),
+            # Bequest estate-grid tail: [grid count, f0, f1, ...] spending
+            # fractions of the solved w* walked by bequest.wgsl. The JS
+            # buildDynamicModel appends the same tail (three-way mirror).
+            np.asarray(
+                [float(len(beq.estate_grid_fractions)), *map(float, beq.estate_grid_fractions)],
+                dtype=np.float32,
+            ),
         ]
     ).astype(np.float32)
 
@@ -952,6 +973,8 @@ def build_payload(price_path, config=None) -> Dict[str, object]:
         "floorPercentile": config["simulation"].floor_percentile,
         "targetSpending": config["simulation"].target_spending_monthly,
         "allocationCount": len(names),
+        "bequestIntensity": config["bequest"].bequest_intensity,
+        "bequestCurvature": config["bequest"].bequest_curvature,
     }
 
     dates = returns_df["Date"]

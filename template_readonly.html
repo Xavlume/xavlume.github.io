@@ -412,8 +412,8 @@ td { padding: 5px 10px; vertical-align: middle; white-space: nowrap; }
     <section class="kpi-row">
       <div class="kpi-card featured">
         <span class="kpi-label">Certainty Equivalent</span>
-        <div class="kpi-num green" id="kpi-ce">$4,847<span style="font-size:14px; font-weight:500; color:var(--text-muted)">/mo</span></div>
-        <div class="kpi-subtext" id="kpi-ce-sub">The steady monthly income you would view as equally desirable to this strategy's fluctuating market outcomes, given your risk aversion (&gamma; = 3.0).</div>
+        <div class="kpi-num green" id="kpi-ce">$4,158<span style="font-size:14px; font-weight:500; color:var(--text-muted)">/mo</span></div>
+        <div class="kpi-subtext" id="kpi-ce-sub">The steady monthly income you would view as equally desirable to this strategy's fluctuating market outcomes, given your risk aversion (&gamma; = 4.0).</div>
       </div>
 
       <div class="kpi-card">
@@ -431,25 +431,25 @@ td { padding: 5px 10px; vertical-align: middle; white-space: nowrap; }
       <div class="kpi-card">
         <span class="kpi-label">Home Purchase Milestone</span>
         <div class="kpi-num" style="font-size:22px" id="kpi-buy-age">Age 33.6</div>
-        <div class="kpi-subtext" id="kpi-buy-sub">Average age when target down payment is accumulated. Initial mortgage is <b class="mono" id="kpi-mortgage">$1,914/mo</b> (fully paid off by 55).</div>
+        <div class="kpi-subtext" id="kpi-buy-sub">Average age when target down payment is accumulated. Initial mortgage is <b class="mono" id="kpi-mortgage">$1,911/mo</b> (fully paid off by 55).</div>
       </div>
     </section>
 
     <!-- WORKSPACE: DIALS + CANVAS S-CURVE -->
     <div class="workspace-grid">
       
-      <!-- RISK TOLERANCE PANEL -->
+      <!-- RISK & ESTATE PREFERENCES PANEL -->
       <div class="card">
         <div class="card-header">
-          <span class="card-title">Risk Tolerance</span>
+          <span class="card-title">Risk &amp; Estate Preferences</span>
         </div>
 
         <div class="control-group">
           <div class="control-top">
             <span class="control-label">Risk Aversion (&gamma; &mdash; CRRA Utility)</span>
-            <span class="control-value" id="val-gamma">3.0 (Balanced)</span>
+            <span class="control-value" id="val-gamma">4.0 (Conservative)</span>
           </div>
-          <input type="range" id="slider-gamma" min="0" max="8" step="0.5" value="3.0">
+          <input type="range" id="slider-gamma" min="0" max="8" step="0.5" value="4.0">
         </div>
 
         <div class="control-group">
@@ -459,6 +459,24 @@ td { padding: 5px 10px; vertical-align: middle; white-space: nowrap; }
           </div>
           <input type="range" id="slider-lambda" min="0" max="0.03" step="0.005" value="0.000">
           <span style="font-size:11px; color:var(--text-muted)">Penalizes strategies that suffer long, deep drawdowns.</span>
+        </div>
+
+        <div class="control-group">
+          <div class="control-top">
+            <span class="control-label">Bequest Intensity (&theta; &mdash; Estate Utility)</span>
+            <span class="control-value" id="val-theta">0.50 (Balanced)</span>
+          </div>
+          <input type="range" id="slider-theta" min="0" max="1" step="0.01" value="0.5">
+          <span style="font-size:11px; color:var(--text-muted)">0 = no bequest: spend the max sustainable w* and die with ~$0. Any &theta; &gt; 0 spends less to fund an estate &mdash; the higher &theta;, the less you spend and the bigger the estate.</span>
+        </div>
+
+        <div class="control-group">
+          <div class="control-top">
+            <span class="control-label">Bequest Curvature (k &mdash; Luxury Threshold)</span>
+            <span class="control-value" id="val-k">$200,000</span>
+          </div>
+          <input type="range" id="slider-k" min="0" max="1000000" step="25000" value="200000">
+          <span style="font-size:11px; color:var(--text-muted)">Luxury threshold: small bequests give little satisfaction until they clear this amount. Below it, you'd rather spend the money. Clamped to a $10k floor whenever &theta; is &gt; 0.</span>
         </div>
 
         <button class="btn btn-green" id="btn-update-table" style="width:100%; margin-top:8px; padding:9px 16px;">

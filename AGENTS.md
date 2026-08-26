@@ -250,6 +250,17 @@ Passes and dispatch:
 | 4 | `solve` | 24-step bisection → sustainable spending w* | `⌈sims/64⌉ × allocations` |
 | 5 | `track_drawdowns` | Composite Ulcer Index per path | `⌈sims/64⌉ × allocations` |
 | 6 | `quantiles` | 201-point spending quantile ladder | `allocations` workgroups |
+| 7 | `bequest_reset` | zero the persistent estate histogram | `allocations × grid` workgroups (tiny) |
+| 8 | `bequest_walk` | estate at w = f·w* per (allocation, grid fraction) — **one dispatch per simulation batch** | `allocations × grid` workgroups |
+| 9 | `bequest_final` | 201-point estate ladder from the accumulated histogram | `allocations × grid` workgroups (tiny) |
+
+Passes 7–9 live in the separate `bequest.wgsl` module (own 7-binding layout;
+two read-write bindings; the per-simulation inputs are packed into one
+`sim_data` buffer so the module stays within the max-8-storage-buffers-per-
+stage limit). `bequest_walk` is batched like `solve` so no single dispatch
+outlives the Windows TDR watchdog (~2 s): each batch's lives are folded into
+a persistent fixed-scale histogram (`estate_hist`), and only the tiny
+reset/final dispatches run once per simulation.
 
 ### 6.2 Bindings (main module)
 
@@ -308,8 +319,11 @@ f32 words in this order (layout documented in both `common.wgsl` and
 [*, +54)               tax tail: gross/net interpolation grids; [44..47] monthly
                        thresholds; slot 48 is an UNUSED PAD; [49..53] tax rates
 [*, +18)               skew-t constants: xi[3], omega[3], delta[3], Cholesky[9]
-[*, +10)               house constants (target capital, mortgage principal/rate,
-                       taxes, rent, FHSA, HBP, house count, …)
+[*, +11)               house constants (target capital, mortgage principal/rate,
+                       taxes, rent, FHSA, HBP, house count, target property
+                       value at index 10 — read only by the bequest pass)
+[*, +1+grid)           bequest estate-grid tail: [grid count, spending
+                       fractions...], consumed only by bequest.wgsl
 ```
 
 Mirrors: `buildDynamicModel` in `RUNTIME_JS` and the offset math in

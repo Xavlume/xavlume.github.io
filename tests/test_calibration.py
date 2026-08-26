@@ -143,9 +143,38 @@ class TestDerivedTables(unittest.TestCase):
         lc = self.config["lifecycle"]
         career = self.tables["career_years"] * 6
         retire = self.tables["retire_months"]
-        expected = career + 8 * retire + 54 + 18 + 10
+        expected = career + 8 * retire + 54 + 18 + 11 + 1 + len(
+            self.config["bequest"].estate_grid_fractions
+        )
         self.assertEqual(buf.size, expected)
         self.assertTrue(np.isfinite(buf).all())
+
+    def test_model_buffer_bequest_tail(self):
+        buf = cal.build_model_buffer(self.config, PRICE_PATH)
+        beq = self.config["bequest"]
+        retire = self.tables["retire_months"]
+        house_base = self.tables["career_years"] * 6 + 8 * retire + 54 + 18
+        # House constant index 10 = the target property value (bequest home equity).
+        self.assertEqual(float(buf[house_base + 10]), self.config["housing"].property_value)
+        # Estate-grid tail: [grid count, fractions...].
+        tail = buf[house_base + 11:]
+        self.assertEqual(int(tail[0]), len(beq.estate_grid_fractions))
+        self.assertTrue(np.allclose(tail[1:], beq.estate_grid_fractions, atol=1e-6))
+
+    def test_bequest_payload(self):
+        payload = cal.build_payload(PRICE_PATH, cfg.instance_config())
+        # DFJ-aligned defaults: gamma 4, theta 0.5 (parity), k $200k.
+        self.assertEqual(payload["defaults"]["gamma"], 4.0)
+        self.assertEqual(payload["defaults"]["bequestIntensity"], 0.5)
+        self.assertEqual(payload["defaults"]["bequestCurvature"], 200_000.0)
+        self.assertEqual(
+            payload["constants"]["estateGridFractions"],
+            [0.5, 0.6, 0.7, 0.8, 0.9, 1.0],
+        )
+        self.assertEqual(payload["constants"]["minBequestCurvature"], 10_000.0)
+        self.assertEqual(payload["constants"]["bequestParityReferenceEstate"], 500_000.0)
+        self.assertEqual(payload["constants"]["bequestParityReferenceSpending"], 5_000.0)
+        self.assertEqual(payload["constants"]["propertyValue"], 500_000.0)
 
 
 class TestAllocationMap(unittest.TestCase):

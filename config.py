@@ -155,6 +155,47 @@ class SmileConfig:
 
 
 @dataclass(frozen=True)
+class BequestConfig:
+    """Bequest preferences for the estate-adjusted certainty equivalent.
+
+    The estate at age 95 is computed per simulated life as the tax-adjusted
+    terminal portfolio (TFSA tax-free, non-registered at the capital-gains
+    inclusion rate, RRSP/RRIF at the top marginal bracket, principal
+    residence exempt) and its utility is the De Nardi-style bequest term
+    ``theta * (estate_equiv + k_equiv)^(1 - gamma)`` added to the CRRA
+    consumption utility, where the estate is valued in monthly-spending-
+    equivalent units (lump sum spread over the retirement horizon) so the
+    bequest weight is comparable to the consumption side at any gamma. The
+    spending decision is the fraction of the solved maximum sustainable
+    spending w* that maximizes the combined utility; the fractions grid is
+    walked on the GPU once per run, and the (theta, k) pair re-ranks the
+    table in pure JavaScript (never inside the solver).
+    """
+
+    # Defaults aligned with the De Nardi-French-Jones (2010) calibration
+    # (theta ~ 2360 and k ~ $273k in their annual/thousands-of-dollars units;
+    # 0.5 on the parity-normalized slider and $200k here play the same role).
+    bequest_intensity: float = 0.5   # theta: slider 0..1, where 0.5 = parity at any gamma
+    bequest_curvature: float = 200_000.0   # k ($): luxury threshold; (estate + k)^(1-gamma)
+    # CRRA utility of a zero estate is -infinity for gamma > 1, so when the
+    # bequest motive is on (theta > 0) the luxury threshold is clamped to at
+    # least this many dollars (De Nardi's k exists precisely to bound it).
+    min_bequest_curvature: float = 10_000.0
+    # Reference point for the parity normalization of the theta slider. The
+    # actual intensity used in the utility is 2 * parity * theta_slider with
+    # parity = (estate_ref / (retireMonths * spending_ref))^(gamma - 1), the
+    # level at which the bequest term equals the consumption term for a life
+    # with a parity_reference_estate estate and parity_reference_spending
+    # of monthly spending. Slider 0.5 therefore always means "parity", at
+    # any risk aversion, and 1 means "twice parity".
+    parity_reference_estate: float = 500_000.0
+    parity_reference_spending_monthly: float = 5_000.0
+    estate_grid_fractions: List[float] = field(
+        default_factory=lambda: [0.50, 0.60, 0.70, 0.80, 0.90, 1.00]
+    )
+
+
+@dataclass(frozen=True)
 class SimulationConfig:
     """Runtime solver/tuning defaults exposed to the web UI."""
 
@@ -169,7 +210,9 @@ class SimulationConfig:
     # measured). The k-loop stride still covers every allocation in ONE
     # dispatch per pass (AMD D3D12 write-drop workaround).
     columns_per_workgroup: int = 1
-    gamma: float = 3.0
+    # Default risk aversion, aligned with the De Nardi-French-Jones (2010)
+    # calibration (gamma ~ 3.84).
+    gamma: float = 4.0
     floor_percentile: int = 10
     target_spending_monthly: float = 3_500.0
     bisection_steps: int = 24
@@ -185,6 +228,7 @@ def default_config() -> Dict[str, object]:
         "cma": CMAConfig(),
         "calibration": ModelCalibrationConfig(),
         "smile": SmileConfig(),
+        "bequest": BequestConfig(),
         "simulation": SimulationConfig(),
     }
 
@@ -197,6 +241,7 @@ def instance_config(
     cma: CMAConfig | None = None,
     calibration: ModelCalibrationConfig | None = None,
     smile: SmileConfig | None = None,
+    bequest: BequestConfig | None = None,
     simulation: SimulationConfig | None = None,
 ) -> Dict[str, object]:
     """Compose an explicit configuration, filling unspecified categories with their defaults."""
@@ -209,6 +254,7 @@ def instance_config(
         "cma": cma or defaults["cma"],
         "calibration": calibration or defaults["calibration"],
         "smile": smile or defaults["smile"],
+        "bequest": bequest or defaults["bequest"],
         "simulation": simulation or defaults["simulation"],
     }
 

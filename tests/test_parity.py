@@ -89,6 +89,7 @@ class TestPipelineDeterminism(unittest.TestCase):
         self.assertTrue(np.array_equal(first.spending, second.spending))
         self.assertTrue(np.array_equal(first.quantiles, second.quantiles))
         self.assertTrue(np.array_equal(first.ui_means, second.ui_means))
+        self.assertTrue(np.array_equal(first.estate, second.estate))
         self.assertEqual(first.names, second.names)
 
     def test_quantiles_monotone_and_sane(self):
@@ -107,6 +108,52 @@ class TestPipelineDeterminism(unittest.TestCase):
         # Composite UI scores are non-negative with a material spread.
         self.assertTrue(np.all(result.ui_means >= 0.0))
         self.assertGreater(float(result.ui_means.max() - result.ui_means.min()), 1.0)
+
+    def test_estate_ladders_sane_and_deterministic(self):
+        config = cfg.instance_config()
+        engine = engine_mod.Engine(config=config, batch_size=64)
+        names = sorted(cal.build_allocation_defs().keys())
+        renter = names.index("HOUSE_NONE_VEQT_VEQT_VEQT")
+        buyer = names.index("HOUSE_CASH_VEQT_VEQT_VEQT")
+        first = engine.run(64, allocation_indices=[renter, buyer])
+        second = engine.run(64, allocation_indices=[renter, buyer])
+        self.assertTrue(np.array_equal(first.estate, second.estate))
+        e = first.estate  # (allocations, grid, 201)
+        grid = len(config["bequest"].estate_grid_fractions)
+        self.assertEqual(e.shape, (2, grid, 201))
+        self.assertTrue(np.isfinite(e).all())
+        self.assertTrue(np.all(e >= 0.0))
+        # The same lives are walked at every fraction, and spending less
+        # cannot reduce a life's terminal estate: every ladder point must be
+        # non-increasing in the fraction f (small tolerance for histogram
+        # interpolation noise at near-zero estates).
+        for a in range(e.shape[0]):
+            for g in range(grid - 1):
+                self.assertTrue(np.all(e[a, g] >= e[a, g + 1] - 1.0),
+                                f"allocation {a}: estate not monotone at grid {g}")
+        # At f = 1 the liquid portfolio is exhausted by construction of w*:
+        # renters keep ~nothing, buyers keep only the principal residence
+        # (~the target property value, mortgage amortized to zero).
+        self.assertLess(float(e[0, -1, 100]), 25_000.0, "renter f=1 median estate")
+        self.assertGreater(float(e[1, -1, 100]), 300_000.0, "buyer f=1 median estate")
+        self.assertLess(float(e[1, -1, 100]), 700_000.0, "buyer f=1 median estate")
+        # At f = 0.5 the estate is materially larger than at f = 1.
+        self.assertGreater(float(e[0, 0, 100]), 4 * float(e[0, -1, 100]) + 1_000.0)
+        self.assertGreater(float(e[1, 0, 100]), float(e[1, -1, 100]) + 50_000.0)
+
+    def test_estate_ladders_batched_identical_to_single_pass(self):
+        # The bequest walk is dispatched once per simulation batch and folds
+        # every life into a persistent fixed-scale histogram; integer
+        # accumulation is exact, so splitting a run across batches must
+        # produce byte-identical ladders to a single-dispatch run.
+        config = cfg.instance_config()
+        names = sorted(cal.build_allocation_defs().keys())
+        indices = [names.index("HOUSE_NONE_VEQT_VEQT_VEQT"), names.index("HOUSE_CASH_VEQT_VEQT_VEQT")]
+        single = engine_mod.Engine(config=config, batch_size=128).run(128, allocation_indices=indices)
+        multi = engine_mod.Engine(config=config, batch_size=64).run(128, allocation_indices=indices)
+        self.assertTrue(np.array_equal(single.estate, multi.estate),
+                        "batched estate ladders differ from the single-pass ladders")
+        self.assertTrue(np.array_equal(single.spending, multi.spending))
 
 
 if __name__ == "__main__":

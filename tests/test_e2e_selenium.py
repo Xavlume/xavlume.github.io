@@ -255,6 +255,14 @@ def main() -> int:
         check("Composite UI spread is material", dist["max"] - dist["min"] > 1.0, f"range {dist['max'] - dist['min']:.2f}")
 
         section("LAMBDA = 0 (baseline identity)")
+        # The shipped defaults carry a bequest motive (theta 0.5 / k $200k),
+        # so zero the bequest sliders before capturing the plain-CE baseline
+        # the lambda formula gates below compare against.
+        driver.execute_script(
+            "byId('slider-theta').value = '0'; byId('slider-theta').dispatchEvent(new Event('input'));"
+            "byId('slider-k').value = '0'; byId('slider-k').dispatchEvent(new Event('input'));"
+        )
+        click_update(driver)
         base = rows_snapshot(driver)
         check("lambda=0 CE equals ceBase for every row", all(abs(r["ce"] - r["ceBase"]) < 1e-9 for r in base))
         check("lambda=0 rows sorted by base CE desc", all(base[i]["ce"] >= base[i + 1]["ce"] for i in range(len(base) - 1)))
@@ -305,6 +313,60 @@ def main() -> int:
             for a, b in zip(restored, base)
         )
         check("lambda=0 restores exact baseline order/CE", same)
+
+        section("BEQUEST PREFERENCES (theta / k instant re-rank)")
+        title = driver.execute_script(
+            "return document.querySelector('.workspace-grid .card .card-title').textContent.trim();"
+        )
+        check("risk panel renamed to Risk & Estate Preferences", title == "Risk & Estate Preferences", f"'{title}'")
+        beq = driver.execute_script(
+            "const s = state.results[0];"
+            "return {grids: s.estate ? s.estate.length : 0, ladder: s.estate && s.estate[0] ? s.estate[0].length : 0,"
+            " finite: s.estate ? s.estate.every(l => l.every(v => Number.isFinite(v))) : false};"
+        )
+        check("every strategy carries cached estate ladders (grid x 201)",
+              beq["grids"] == 6 and beq["ladder"] == 201 and beq["finite"], str(beq))
+        driver.execute_script(
+            "byId('slider-theta').value = '0.5'; byId('slider-theta').dispatchEvent(new Event('input'));"
+        )
+        parity_label = driver.execute_script("return byId('val-theta').textContent;")
+        check("theta=0.5 labels as Balanced", "Balanced" in parity_label, f"'{parity_label}'")
+        driver.execute_script(
+            "byId('slider-theta').value = '0'; byId('slider-theta').dispatchEvent(new Event('input'));"
+        )
+
+        def set_bequest(theta: float, k: float) -> None:
+            driver.execute_script(
+                "byId('slider-theta').value = String(%r); byId('slider-theta').dispatchEvent(new Event('input'));"
+                "byId('slider-k').value = String(%r); byId('slider-k').dispatchEvent(new Event('input'));" % (theta, k)
+            )
+
+        timing_before = driver.execute_script("return byId('timing-meta').textContent;")
+        set_bequest(1.0, 0.0)
+        click_update(driver)
+        beq_on = rows_snapshot(driver)
+        timing_after = driver.execute_script("return byId('timing-meta').textContent;")
+        check("theta>0 lowers every base CE at the default gamma (bequest costs spending)",
+              all(beq_on[i]["ceBase"] < base[i]["ceBase"] - 1.0 for i in range(20)),
+              f"top1 {base[0]['ceBase']:,.1f} -> {beq_on[0]['ceBase']:,.1f}")
+        check("no GPU re-simulation for the bequest re-rank (timing unchanged)",
+              timing_before == timing_after, f"'{timing_before}'")
+        check("rows stay sorted by bequest-adjusted CE desc",
+              all(beq_on[i]["ce"] >= beq_on[i + 1]["ce"] for i in range(len(beq_on) - 1)))
+        set_bequest(1.0, 500000.0)
+        click_update(driver)
+        beq_k = rows_snapshot(driver)
+        check("k>0 softens the bequest motive (CE rises vs k=0)",
+              all(beq_k[i]["ceBase"] > beq_on[i]["ceBase"] + 1.0 for i in range(20)),
+              f"top1 {beq_on[0]['ceBase']:,.1f} -> {beq_k[0]['ceBase']:,.1f}")
+        set_bequest(0.0, 0.0)
+        click_update(driver)
+        beq_off = rows_snapshot(driver)
+        same = all(
+            abs(a["ce"] - b["ce"]) < 1e-6 and a["name"] == b["name"]
+            for a, b in zip(beq_off, base)
+        )
+        check("theta=0 restores the exact baseline order/CE", same)
 
         section("UI ORDERING SANITY")
         order = driver.execute_script(
