@@ -222,7 +222,7 @@ them breaks parity tests or the E2E suite.**
    the user to review and commit themselves. "Definition of done" does NOT
    include committing — if a task description or checklist seems to say so,
    the user's permission still wins. When you finish a task, report exactly
-   which files changed and offer to commit, but do not commit.
+   which files changed, but do not commit.
 
 ---
 
