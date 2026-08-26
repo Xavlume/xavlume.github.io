@@ -21,9 +21,10 @@ simulation for a Quebec resident, built to run 100% in the browser
 via **WebGPU** and to deploy as a single static file on **GitHub Pages**.
 
 `index.html` is the final standalone application. It embeds the
-calibrated heavy-tailed market model, five WGSL compute passes and a
-Wealthsimple-style institutional light UI in one self-contained file — no
-backend, no local file dependencies (fonts come from the Google Fonts CDN).
+calibrated heavy-tailed market model, five WGSL compute passes plus quantile
+and terminal-estate (bequest) reductions, and a Wealthsimple-style
+institutional light UI in one self-contained file — no backend, no local file
+dependencies (fonts come from the Google Fonts CDN).
 
 ```
 .
@@ -46,7 +47,8 @@ backend, no local file dependencies (fonts come from the Google Fonts CDN).
 │   ├── accumulation.wgsl   # 5 house strategies x 7 paths, stochastic buy, FHSA/HBP
 │   ├── solver.wgsl         # 24-step parallel bisection for sustainable spending w*
 │   ├── drawdown_ui.wgsl    # Composite Ulcer Index tracking across lifecycle phases
-│   └── quantiles.wgsl      # GPU-native 2-pass histogram reduction (201 quantiles/allocation)
+│   ├── quantiles.wgsl      # GPU-native 2-pass histogram reduction (201 quantiles/allocation)
+│   └── bequest.wgsl        # Terminal-estate quantile ladders (reset/walk/final, batched like the solver)
 └── tests/
     ├── test_calibration.py # Calibration unit tests
     ├── test_parity.py      # Python CPU vs. WebGPU numerical parity tests
@@ -90,16 +92,18 @@ annual net spending** `w*` by 24-step parallel bisection, then reduces the
 201-point monthly spending quantile ladder (P0…P100) on the GPU.
 
 The dashboard ranks strategies by **Certainty Equivalent** (CRRA utility),
-with instant post-processing: moving the Risk Aversion `γ` or Drawdown
-Aversion `λ` sliders and pressing *Update Table & Re-Rank* re-ranks all 5,040
-strategies in pure JavaScript from the cached quantiles, applying the exact
-formula
+with instant post-processing: moving the Risk Aversion `γ`, Drawdown Aversion
+`λ`, Bequest Intensity `θ` or Bequest Curvature `k` sliders and pressing
+*Update Table & Re-Rank* re-ranks all 5,040 strategies in pure JavaScript
+from the cached quantile and estate ladders, applying the exact formula
 
 ```
-CE_adj = CE(γ) × exp(−λ × Composite UI)
+CE_adj = CE(γ, θ, k) × exp(−λ × Composite UI)
 ```
 
-No GPU re-simulation is needed for any slider, filter, search or sort.
+where `CE(γ, 0, 0)` is the unadjusted CRRA certainty equivalent and θ > 0
+activates the bequest-adjusted base CE (see below). No GPU re-simulation is
+needed for any slider, filter, search or sort.
 
 ## The mathematical model
 
