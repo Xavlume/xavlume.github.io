@@ -1360,7 +1360,7 @@ function drawDistributionChart() {
 
   if (!state.results || !activeStrategy) {
     ctx.fillStyle = "#64748b";
-    ctx.font = "12px Plus Jakarta Sans, sans-serif";
+    ctx.font = "12px Inter, sans-serif";
     ctx.fillText("Run a simulation to draw the spending distribution", padLeft, padTop + pHeight / 2);
     return;
   }
@@ -1391,7 +1391,7 @@ function drawDistributionChart() {
     ctx.beginPath(); ctx.moveTo(x, padTop + 2); ctx.lineTo(x, height - padBottom); ctx.stroke();
     ctx.setLineDash([]);
     const text = m.label + ": " + money(quantileAt(activeStrategy, m.p));
-    ctx.font = "700 10px Plus Jakarta Sans, sans-serif";
+    ctx.font = "700 10px Inter, sans-serif";
     const textMetrics = ctx.measureText(text);
     const badgeW = textMetrics.width + 14;
     const badgeH = 18;
@@ -1687,14 +1687,14 @@ createDeviceContext().catch(error => {
 # Template surgery
 # ---------------------------------------------------------------------------
 STATUS_STRIP = """
-<div class="engine-status" style="display:flex; flex-wrap:wrap; gap:6px 18px; align-items:center; padding:8px 14px; background:var(--bg-card); border:1px solid var(--border-subtle); border-radius:10px; box-shadow:var(--shadow-sm); font-size:11px; font-family:var(--font-mono); color:var(--text-muted)">
+<div class="engine-status" style="display:flex; flex-wrap:wrap; gap:6px 18px; align-items:center; padding:6px 12px; background:var(--bg-card); border:1px solid var(--border-subtle); border-radius:2px; font-size:11px; font-family:var(--font-mono); color:var(--text-muted)">
   <span id="gpu-status" class="engine-chip ok">Checking WebGPU…</span>
   <span>Adapter: <b id="adapter-meta" style="color:var(--text-primary)">pending</b></span>
   <span>Paths: <b id="completed-meta" style="color:var(--text-primary)">no run yet</b></span>
   <span>Timing: <b id="timing-meta" style="color:var(--text-primary)">—</b></span>
   <span style="flex:1; text-align:right; color:var(--text-secondary)" id="run-message">Open Settings and press “Simulate” to run the engine.</span>
 </div>
-<div class="progress" style="height:4px; background:var(--border-subtle); border-radius:99px; overflow:hidden; margin:0">
+<div class="progress" style="height:4px; background:var(--border-subtle); border-radius:2px; overflow:hidden; margin:0">
   <div id="progress-fill" style="height:100%; width:0; background:var(--brand-green); transition:width .12s ease"></div>
 </div>
 <div style="display:flex; justify-content:space-between; font-size:10px; font-family:var(--font-mono); color:var(--text-dim); margin-top:2px">
@@ -1720,7 +1720,7 @@ def _inject_status_strip(html: str, payload: dict) -> str:
         '.cma-toggle input[type="checkbox"]{width:15px;height:15px;accent-color:var(--brand-navy);cursor:pointer}'
         ".cma-toggle-hint{color:var(--text-muted);font-weight:500}"
         ".btn-attract{animation:engine-glow 1.9s ease-in-out infinite;position:relative}"
-        ".btn-attract::after{content:\"\";position:absolute;inset:-5px;border-radius:11px;border:2px solid var(--brand-green);opacity:0;animation:engine-ring 1.9s ease-out infinite;pointer-events:none}"
+        ".btn-attract::after{content:\"\";position:absolute;inset:-5px;border-radius:4px;border:2px solid var(--brand-green);opacity:0;animation:engine-ring 1.9s ease-out infinite;pointer-events:none}"
         "@keyframes engine-glow{0%,100%{box-shadow:0 0 0 0 rgba(5,150,105,.40)}50%{box-shadow:0 0 16px 3px rgba(5,150,105,.55)}}"
         "@keyframes engine-ring{0%{opacity:.9;transform:scale(1)}70%{opacity:0;transform:scale(1.07)}100%{opacity:0}}</style></head>",
         1,

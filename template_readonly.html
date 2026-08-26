@@ -6,7 +6,7 @@
 <title>Wealth &amp; Lifetime Allocation Engine</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
 
 <style>
 :root {
@@ -37,11 +37,11 @@
   --shadow-sm: 0 1px 3px 0 rgba(0, 0, 0, 0.04), 0 1px 2px -1px rgba(0, 0, 0, 0.04);
   --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -2px rgba(0, 0, 0, 0.05);
 
-  --font-sans: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   --font-mono: 'JetBrains Mono', 'SF Mono', Consolas, monospace;
 }
 
-* { box-sizing: border-box; margin: 0; padding: 0; }
+* { box-sizing: border-box; margin: 0; padding: 0; font-feature-settings: "tnum" 1, "cv05" 1, "zero" 1; } /* Tabular numbers & slashed zero */
 body {
   background-color: var(--bg-app);
   color: var(--text-primary);
@@ -77,12 +77,11 @@ body {
 .header-bar {
   background: var(--bg-card);
   border: 1px solid var(--border-subtle);
-  border-radius: 12px;
-  padding: 14px 20px;
+  border-radius: 4px;
+  padding: 10px 14px;
   display: flex;
   justify-content: space-between;
   align-items: center;
-  box-shadow: var(--shadow-sm);
   flex-wrap: wrap;
   gap: 12px;
 }
@@ -93,8 +92,8 @@ body {
 
 button, .btn {
   font-family: var(--font-sans); cursor: pointer; border: 0;
-  border-radius: 8px; font-weight: 600; font-size: 12px;
-  padding: 8px 16px; transition: all 0.15s ease;
+  border-radius: 2px; font-weight: 600; font-size: 12px;
+  padding: 6px 12px; transition: all 0.15s ease;
   display: inline-flex; align-items: center; justify-content: center; gap: 6px;
   user-select: none;
 }
@@ -121,7 +120,7 @@ button, .btn {
 }
 .kpi-card {
   background: var(--bg-card); border: 1px solid var(--border-subtle);
-  border-radius: 10px; padding: 16px 18px; box-shadow: var(--shadow-sm);
+  border-radius: 2px; padding: 10px 12px;
   display: flex; flex-direction: column; gap: 6px;
 }
 .kpi-card.featured {
@@ -141,7 +140,7 @@ button, .btn {
 
 .card {
   background: var(--bg-card); border: 1px solid var(--border-subtle);
-  border-radius: 10px; padding: 18px; box-shadow: var(--shadow-sm);
+  border-radius: 2px; padding: 12px;
   display: flex; flex-direction: column; gap: 14px;
 }
 .card-header {
@@ -166,13 +165,12 @@ input[type="range"] {
 .field-label { font-size: 11px; font-weight: 600; color: var(--text-secondary); }
 .input-affix-wrap {
   display: flex; align-items: center; background: #ffffff;
-  border: 1px solid var(--border-medium); border-radius: 6px;
-  overflow: hidden; transition: border-color 0.15s, box-shadow 0.15s;
+  border: 1px solid var(--border-medium); border-radius: 2px;
+  overflow: hidden; transition: border-color 0.15s;
   width: 100%;
 }
 .input-affix-wrap:focus-within {
   border-color: var(--brand-navy);
-  box-shadow: 0 0 0 2px rgba(15, 23, 42, 0.08);
 }
 .affix {
   padding: 7px 11px; font-size: 11px; font-weight: 600; color: var(--text-muted);
@@ -189,14 +187,14 @@ input[type="range"] {
   color: var(--text-primary); background: transparent;
 }
 select.form-input {
-  font-family: var(--font-sans); cursor: pointer; padding: 7px 8px;
-  border: 1px solid var(--border-medium); border-radius: 6px;
+  font-family: var(--font-sans); cursor: pointer; padding: 6px 8px;
+  border: 1px solid var(--border-medium); border-radius: 2px;
 }
 
 /* Chart Card */
 .chart-box {
   background: var(--bg-card); border: 1px solid var(--border-subtle);
-  border-radius: 10px; padding: 18px; box-shadow: var(--shadow-sm);
+  border-radius: 2px; padding: 12px;
   display: flex; flex-direction: column; gap: 10px; min-width: 0;
 }
 .chart-top { display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 8px; }
@@ -208,28 +206,28 @@ canvas { width: 100%; height: 100%; display: block; cursor: crosshair; }
 /* Table Leaderboard */
 .table-card {
   background: var(--bg-card); border: 1px solid var(--border-subtle);
-  border-radius: 10px; box-shadow: var(--shadow-sm); overflow: hidden;
+  border-radius: 2px; overflow: hidden;
   display: flex; flex-direction: column;
 }
 .table-toolbar {
-  padding: 12px 18px; border-bottom: 1px solid var(--border-subtle);
+  padding: 8px 12px; border-bottom: 1px solid var(--border-subtle);
   background: #fafafa; display: flex; justify-content: space-between;
   align-items: center; flex-wrap: wrap; gap: 10px;
 }
 .segmented-pills {
-  display: inline-flex; background: #e2e8f0; padding: 2px; border-radius: 6px; gap: 2px;
+  display: inline-flex; background: #e2e8f0; padding: 2px; border-radius: 2px; gap: 2px;
 }
 .seg-pill {
-  background: none; border: 0; padding: 6px 14px; font-size: 11px; font-weight: 600;
-  color: var(--text-secondary); border-radius: 5px;
+  background: none; border: 0; padding: 4px 10px; font-size: 11px; font-weight: 600;
+  color: var(--text-secondary); border-radius: 2px;
 }
-.seg-pill.active { background: #ffffff; color: var(--text-primary); box-shadow: var(--shadow-sm); font-weight: 700; }
+.seg-pill.active { background: #ffffff; color: var(--text-primary); border: 1px solid var(--border-medium); font-weight: 700; }
 
 .table-wrap { overflow-x: auto; max-height: 540px; }
 table { width: 100%; border-collapse: collapse; text-align: left; font-size: 12px; min-width: 1140px; }
 thead { position: sticky; top: 0; z-index: 2; background: #f8fafc; border-bottom: 1px solid var(--border-medium); }
 th {
-  padding: 10px 12px; font-size: 10px; font-weight: 700; text-transform: uppercase;
+  padding: 6px 10px; font-size: 10px; font-weight: 700; text-transform: uppercase;
   letter-spacing: 0.05em; color: var(--text-muted); cursor: pointer; user-select: none;
   font-family: var(--font-mono);
 }
@@ -243,7 +241,7 @@ tbody tr { border-bottom: 1px solid var(--border-subtle); cursor: pointer; trans
 tbody tr.v-spacer { border: 0; cursor: default; transition: none; }
 tbody tr:hover { background: #f8fafc; }
 tbody tr.selected-row { background: var(--brand-green-bg); border-left: 3px solid var(--brand-green); }
-td { padding: 10px 12px; vertical-align: middle; white-space: nowrap; }
+td { padding: 5px 10px; vertical-align: middle; white-space: nowrap; }
 
 .mono { font-family: var(--font-mono); }
 :root {
@@ -264,11 +262,10 @@ td { padding: 10px 12px; vertical-align: middle; white-space: nowrap; }
   align-items: stretch;   /* chip stretches the full badge height */
   background: #ffffff;
   border: 1px solid #cbd5e1;
-  border-radius: 5px;
+  border-radius: 2px;
   overflow: hidden;       /* seamless edge-to-edge clipping */
   font-family: var(--font-mono);
   vertical-align: middle;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
   line-height: 1;
 }
 .badge-chip {
@@ -310,8 +307,7 @@ td { padding: 10px 12px; vertical-align: middle; white-space: nowrap; }
   display: none;
   background: var(--bg-card);
   border: 1px solid var(--border-subtle);
-  border-radius: 12px;
-  box-shadow: var(--shadow-md);
+  border-radius: 4px;
   height: calc(100vh - 32px);
   position: sticky;
   top: 16px;
@@ -323,7 +319,7 @@ td { padding: 10px 12px; vertical-align: middle; white-space: nowrap; }
 }
 
 .panel-titlebar {
-  padding: 14px 18px;
+  padding: 10px 14px;
   border-bottom: 1px solid var(--border-subtle);
   display: flex;
   justify-content: space-between;
@@ -346,16 +342,16 @@ td { padding: 10px 12px; vertical-align: middle; white-space: nowrap; }
 .cat-btn {
   background: transparent; border: 1px solid transparent;
   padding: 6px 4px; font-size: 11px; font-weight: 600;
-  color: var(--text-secondary); border-radius: 6px;
+  color: var(--text-secondary); border-radius: 2px;
   text-align: center; white-space: normal; line-height: 1.2;
 }
 .cat-btn.active {
   background: #ffffff; color: var(--brand-navy); font-weight: 700;
-  border-color: var(--border-medium); box-shadow: var(--shadow-sm);
+  border-color: var(--border-medium);
 }
 
 .settings-body {
-  padding: 18px; overflow-y: auto; flex: 1; display: flex; flex-direction: column; gap: 16px;
+  padding: 12px; overflow-y: auto; flex: 1; display: flex; flex-direction: column; gap: 14px;
 }
 .tab-section { display: none; flex-direction: column; gap: 12px; }
 .tab-section.active { display: flex; }
@@ -366,8 +362,8 @@ td { padding: 10px 12px; vertical-align: middle; white-space: nowrap; }
 .sim-runner-box {
   background: var(--bg-subtle);
   border: 1px solid var(--border-subtle);
-  border-radius: 8px;
-  padding: 12px 14px;
+  border-radius: 2px;
+  padding: 10px 12px;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -521,7 +517,7 @@ td { padding: 10px 12px; vertical-align: middle; white-space: nowrap; }
           </select>
         </div>
 
-        <input type="text" id="table-search" placeholder="Filter strategy (e.g. VGRO, DECLINING)..." style="width:240px; padding:6px 10px; border:1px solid var(--border-medium); border-radius:6px;">
+        <input type="text" id="table-search" placeholder="Filter strategy (e.g. VGRO, DECLINING)..." style="width:240px; padding:5px 10px; border:1px solid var(--border-medium); border-radius:2px;">
       </div>
 
       <div class="table-wrap">
