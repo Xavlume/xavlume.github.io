@@ -168,8 +168,10 @@ class BequestConfig:
     bequest weight is comparable to the consumption side at any gamma. The
     spending decision is the fraction of the solved maximum sustainable
     spending w* that maximizes the combined utility; the fractions grid is
-    walked on the GPU once per run, and the (theta, k) pair re-ranks the
-    table in pure JavaScript (never inside the solver).
+    walked on the GPU once per run, the (theta, k) pair re-ranks the table in
+    pure JavaScript (never inside the solver), and the JS layer refines the
+    fraction continuously between grid points by linear interpolation of the
+    estate ladders.
     """
 
     # Defaults aligned with the De Nardi-French-Jones (2010) calibration

@@ -179,7 +179,11 @@ months), and the θ slider is normalized so **0.5 always means parity, at any
 γ**: the actual intensity is `θ = 2·θ_parity·slider` with
 `θ_parity = (b_ref / (H·c_ref))^(γ−1)` — the level at which the bequest term
 equals the consumption term for a reference life (`b_ref = $500k` estate vs.
-`c_ref = $5,000/mo` spending). 0 = no motive, 0.5 = parity, 1 = twice parity.
+`c_ref = $5,000/mo` spending). The spending fraction itself is refined
+continuously between the GPU grid fractions by linear interpolation of the
+estate ladders (the terminal estate is near-affine in the fraction), so the
+implied choice reports smooth values (e.g. "spends 93% of max sustainable").
+0 = no motive, 0.5 = parity, 1 = twice parity.
 k is clamped to a $10k floor whenever θ > 0 — a zero estate has infinite CRRA
 disutility otherwise (precisely the role of De Nardi's k). θ = k = 0 reduces
 to the unadjusted CE exactly. The shipped defaults (γ = 4, θ = 0.5, k =

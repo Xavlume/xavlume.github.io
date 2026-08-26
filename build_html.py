@@ -1169,31 +1169,105 @@ function ceForQuantiles(quantiles, gamma, dynamic) {
 // sits exactly at f = 1, i.e. the unadjusted CE — the default (theta = k = 0)
 // is a pure identity.
 // ---------------------------------------------------------------------------
-function bequestCeForStrategy(strategy, gamma, theta, k, dynamic) {
-  if (!strategy.estate || strategy.estate.length === 0) return ceForQuantiles(strategy.quantiles, gamma, dynamic);
+// ---------------------------------------------------------------------------
+// Fine spending-fraction search. The GPU walks the estate grid (six fixed
+// fractions of w*) once per run; the JS re-rank refines the choice between
+// grid points by LINEARLY interpolating each of the 201 estate quantiles in
+// f. The terminal estate is empirically near-affine in f (each 0.1 step of
+// spending removes roughly the same wealth), so linear interpolation is
+// accurate to a few percent, preserves quantile and f monotonicity, and
+// cannot overshoot into negative estates near f = 1.
+// ---------------------------------------------------------------------------
+function estateLadderAt(strategy, f, dynamic) {
+  const fractions = dynamic.constants.estateGridFractions || [];
+  const estates = strategy.estate;
+  if (!estates || estates.length === 0) return null;
+  if (fractions.length < 2) return estates[0];
+  const fMin = fractions[0], fMax = fractions[fractions.length - 1];
+  const fClamped = Math.min(fMax, Math.max(fMin, f));
+  if (fClamped <= fMin) return estates[0];
+  if (fClamped >= fMax) return estates[estates.length - 1];
+  let g = 0;
+  while (g < fractions.length - 2 && fractions[g + 1] < fClamped) g++;
+  const fLow = fractions[g], fHigh = fractions[g + 1];
+  const t = (fClamped - fLow) / (fHigh - fLow);
+  const lo = estates[g], hi = estates[g + 1];
+  const ladder = new Float32Array(201);
+  for (let i = 0; i < 201; i++) ladder[i] = lo[i] + t * (hi[i] - lo[i]);
+  return ladder;
+}
+
+// Bequest-adjusted CE at an arbitrary spending fraction f (interpolated
+// estate ladder; exact at the GPU grid fractions).
+function bequestCeAtFraction(strategy, f, params) {
+  const {gamma, thetaActual, kEff, kappa, months, logMode, exponent} = params;
+  const q = strategy.quantiles;
+  const ladder = estateLadderAt(strategy, f, params.dynamic);
+  let sum = 0;
+  for (let i = 1; i < 200; i++) {
+    const c = Math.max(f * q[i] * kappa, 1e-6);
+    const b = Math.max(ladder[i] / months + kEff, 1e-6);
+    sum += logMode ? Math.log(c) + thetaActual * Math.log(b) : Math.pow(c, exponent) + thetaActual * Math.pow(b, exponent);
+  }
+  return logMode ? Math.exp(sum / 199) : Math.pow(sum / 199, 1 / exponent);
+}
+
+// Returns {ce, f}: the bequest-adjusted CE maximized over f in the grid
+// range. An exact scan of the GPU grid fractions (no interpolation error)
+// brackets the maximum, then a parabolic fit through the three points of the
+// winning window refines f continuously (the CE is the sum of a consumption
+// term falling in f and a bequest term rising in f, hence smooth and
+// unimodal near the peak). The result is never worse than the grid scan.
+function bequestBest(strategy, gamma, theta, k, dynamic) {
   const kappa = computeKappa(gamma, dynamic);
   const exponent = 1 - gamma;
   const logMode = Math.abs(exponent) < 1e-4;
-  const q = strategy.quantiles;
   const fractions = dynamic.constants.estateGridFractions || [];
   const months = Math.max(1, dynamic.constants.retireMonths);
   const kEff = Math.max(k, theta > 0 ? (C.minBequestCurvature || 10000) : 0) / months;
   const parity = Math.pow(C.bequestParityReferenceEstate / (months * C.bequestParityReferenceSpending), gamma - 1);
   const thetaActual = 2 * parity * theta;
-  let best = -Infinity;
-  for (let g = 0; g < strategy.estate.length; g++) {
+  const params = {gamma, thetaActual, kEff, kappa, months, logMode, exponent, dynamic};
+
+  // Exact scan over the GPU grid fractions.
+  let bestG = 0;
+  let bestCe = -Infinity;
+  const ces = new Array(fractions.length);
+  for (let g = 0; g < fractions.length; g++) {
     const f = fractions[g] != null ? fractions[g] : 1;
-    const ladder = strategy.estate[g];
-    let sum = 0;
-    for (let i = 1; i < 200; i++) {
-      const c = Math.max(f * q[i] * kappa, 1e-6);
-      const b = Math.max(ladder[i] / months + kEff, 1e-6);
-      sum += logMode ? Math.log(c) + thetaActual * Math.log(b) : Math.pow(c, exponent) + thetaActual * Math.pow(b, exponent);
-    }
-    const ce = logMode ? Math.exp(sum / 199) : Math.pow(sum / 199, 1 / exponent);
-    if (ce > best) best = ce;
+    ces[g] = bequestCeAtFraction(strategy, f, params);
+    if (ces[g] > bestCe) { bestCe = ces[g]; bestG = g; }
   }
-  return best;
+  // Parabolic refinement through the winning window [g-1, g, g+1].
+  const g0 = Math.max(0, bestG - 1), g2 = Math.min(fractions.length - 1, bestG + 1);
+  if (g2 - g0 >= 2) {
+    const y1 = ces[g0], y2 = ces[bestG], y3 = ces[g2];
+    const denom = y1 - 2 * y2 + y3;
+    if (Math.abs(denom) > 1e-12) {
+      const h = fractions[g2] - fractions[g0];
+      const fParabola = fractions[bestG] + 0.5 * h * (y1 - y3) / denom;
+      if (fParabola >= fractions[g0] && fParabola <= fractions[g2]) {
+        const ceParabola = bequestCeAtFraction(strategy, fParabola, params);
+        if (ceParabola > bestCe) return {ce: ceParabola, f: fParabola};
+      }
+    }
+  }
+  return {ce: bestCe, f: fractions[bestG] != null ? fractions[bestG] : 1};
+}
+
+function bequestCeForStrategy(strategy, gamma, theta, k, dynamic) {
+  if (!strategy.estate || strategy.estate.length === 0) return ceForQuantiles(strategy.quantiles, gamma, dynamic);
+  return bequestBest(strategy, gamma, theta, k, dynamic).ce;
+}
+
+// The spending choice the bequest-adjusted CE implies for one strategy: the
+// best fraction f of the max sustainable w* and the median estate at 95
+// (ladder point P50) at that fraction.
+function bequestChoiceForStrategy(strategy, gamma, theta, k, dynamic) {
+  if (!strategy.estate || strategy.estate.length === 0) return null;
+  const best = bequestBest(strategy, gamma, theta, k, dynamic);
+  const ladder = estateLadderAt(strategy, best.f, dynamic);
+  return {f: best.f, medianEstate: ladder ? ladder[100] : 0};
 }
 
 function lowerBound(values, target) {
@@ -1481,6 +1555,21 @@ function updateKpisAndChart(strategy, rows) {
   byId("kpi-floor").innerHTML = money(row.floor != null ? row.floor : strategy.quantiles[20]) + '<span style="font-size:14px; font-weight:500; color:var(--text-muted)">/mo</span>';
   byId("kpi-buy-age").textContent = strategy.buyAge != null ? "Age " + strategy.buyAge.toFixed(1) : "Renter";
   byId("kpi-mortgage").textContent = strategy.mortgage != null ? money(strategy.mortgage) + "/mo" : "None";
+  // Bequest trade-off line: the spending fraction of the max sustainable w*
+  // the chosen preferences imply, and the median estate at 95 it leaves.
+  const beqLine = byId("kpi-bequest");
+  if (beqLine) {
+    const applied = captureAppliedControls();
+    const theta = applied.theta || 0;
+    let text = "";
+    if (theta > 0 && strategy.estate && strategy.estate.length) {
+      const choice = bequestChoiceForStrategy(strategy, applied.gamma, theta, applied.k, state.dynamic || buildDynamicModel(readModelInputs()));
+      if (choice) {
+        text = "Spends " + Math.round(choice.f * 100) + "% of max sustainable to leave a median estate of " + money(choice.medianEstate) + ".";
+      }
+    }
+    beqLine.textContent = text;
+  }
   byId("chart-strategy-name").textContent = strategy.name;
   drawDistributionChart();
 }

@@ -353,6 +353,10 @@ def main() -> int:
               timing_before == timing_after, f"'{timing_before}'")
         check("rows stay sorted by bequest-adjusted CE desc",
               all(beq_on[i]["ce"] >= beq_on[i + 1]["ce"] for i in range(len(beq_on) - 1)))
+        kpi_beq = driver.execute_script("return byId('kpi-bequest').textContent;")
+        check("CE KPI shows the bequest spending trade-off",
+              "Spends" in kpi_beq and "% of max sustainable" in kpi_beq and "$" in kpi_beq,
+              f"'{kpi_beq}'")
         set_bequest(1.0, 500000.0)
         click_update(driver)
         beq_k = rows_snapshot(driver)
@@ -367,6 +371,8 @@ def main() -> int:
             for a, b in zip(beq_off, base)
         )
         check("theta=0 restores the exact baseline order/CE", same)
+        kpi_beq_off = driver.execute_script("return byId('kpi-bequest').textContent;")
+        check("bequest KPI line clears at theta=0", kpi_beq_off == "", f"'{kpi_beq_off}'")
 
         section("UI ORDERING SANITY")
         order = driver.execute_script(
