@@ -283,8 +283,8 @@ Layout is 9 × `vec4` (`dimensions`, `solver`, `calendar`, `constants0-2`,
 `generate`, `generate1`, `dispatch`) — documented field-by-field in
 `common.wgsl`'s `Params`. The `dispatch.x` field is the
 allocation-columns-per-workgroup count from
-`SimulationConfig.columns_per_workgroup` (16 by default in the deployed page,
-1 in the Python engine): `solve`/`track_drawdowns` loop over that many
+`SimulationConfig.columns_per_workgroup` (1 by default in both the deployed
+page and the Python engine): `solve`/`track_drawdowns` loop over that many
 allocation columns per thread so the grid stays ONE dispatch per pass
 (splitting the allocation space into multiple dispatches silently corrupts
 results on some AMD D3D12 drivers). Keep the grid small enough that a single
@@ -295,9 +295,11 @@ and `columns_per_workgroup`, and they interact: at small batch sizes a large
 `columns_per_workgroup` leaves the GPU under-occupied (threads ≈
 batch × allocations / columns), so wall time collapses into the per-thread
 serial chain (batch 100 × columns 128 measured ~0.87 s/dispatch vs ~0.09 s at
-columns 8). Defaults (250 sims, 16 columns) keep dispatches ~0.2 s on a
-modern dGPU with plenty of threads — roughly 5× the TDR headroom of the
-previous 1,024-sim/128-column default while still being faster. There are
+columns 8). The measured 250-sim/16-column configuration keeps dispatches
+~0.2 s on a modern dGPU with plenty of threads — roughly 5× the TDR headroom
+of the previous 1,024-sim/128-column default — while the shipped default of 1
+column gives the shortest dispatches at small strategy spaces; any column
+count produces byte-identical results. There are
 **three synchronized implementations**:
 
 - `engine.make_params` (Python, `engine.py`)
@@ -353,9 +355,11 @@ layout in only one of the three.**
   χ²ν/ν scale + 3 normals + Cholesky rotation), clipped at −95%.
 - **Leverage**: `r1.5 = max(−0.95, 1.5·r − 0.5·r_borrow − fee1.5)`,
   `r2.0 = max(−0.95, 2.0·r − r_borrow − fee2.0)`.
-- **CE**: `CE(γ) = [Σ_t w_t·s_t^(1−γ)]^(1/(1−γ)) · κ(smile, γ)` with
-  mortality-adjusted, discounted intertemporal weights (CPM2014-like table in
-  `calibration.py`, 50% mortality reduction, 1% annual discount).
+- **CE**: `CE(γ) = [ (1/199) Σ_i q_i^(1−γ) ]^(1/(1−γ)) · κ(smile, γ)` with
+  `κ(smile, γ) = [Σ_t w_t·smile_t^(1−γ)]^(1/(1−γ))` (q_i = the 199 interior
+  points of the 201-point spending quantile ladder; w_t = mortality-adjusted,
+  discounted intertemporal weights, CPM2014-like table in `calibration.py`,
+  50% mortality reduction, 1% annual discount).
 - **Re-ranking**: `CE_adj = CE(γ) × exp(−λ × Composite UI)` — pure JS from
   cached 201-point quantile ladders, never a GPU re-simulation.
 - **Composite UI**: drawdowns on cumulative return indices,

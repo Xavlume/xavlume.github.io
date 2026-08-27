@@ -154,6 +154,14 @@ class TestPipelineDeterminism(unittest.TestCase):
         self.assertTrue(np.array_equal(single.estate, multi.estate),
                         "batched estate ladders differ from the single-pass ladders")
         self.assertTrue(np.array_equal(single.spending, multi.spending))
+        # House outcomes and per-path UI scores are read back per batch and
+        # must also be batch-invariant (regression gate for the old bug where
+        # a post-loop scratch re-read returned the LAST batch's data for every
+        # batch slice).
+        self.assertTrue(np.array_equal(single.house_outcomes, multi.house_outcomes),
+                        "batched house outcomes differ from the single-pass outcomes")
+        self.assertTrue(np.array_equal(single.ui_means, multi.ui_means),
+                        "batched UI means differ from the single-pass UI means")
 
 
 if __name__ == "__main__":

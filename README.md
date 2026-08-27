@@ -144,8 +144,16 @@ discounted intertemporal weights (CPM2014 survival curve, 50% mortality
 reduction, 1% annual discount):
 
 ```
-CE(γ) = [ Σ_t w_t · s_t^(1−γ) ]^(1/(1−γ)) · κ(smile, γ)
+CE(γ) = [ (1/199) Σ_i q_i^(1−γ) ]^(1/(1−γ)) · κ(smile, γ)
+κ(smile, γ) = [ Σ_t w_t · smile_t^(1−γ) ]^(1/(1−γ))
 ```
+
+where `q_i` are the 199 interior points of the 201-point monthly-spending
+quantile ladder (P0 and P100, the sample min/max, are excluded as extreme
+order-statistic noise), `w_t` are the mortality-adjusted discounted
+intertemporal weights, and `smile_t` is the monthly smile multiplier. The
+spending distribution is month-stationary (the smile factor separates), so
+the intertemporal weights enter only through κ.
 
 ### Composite Ulcer Index
 

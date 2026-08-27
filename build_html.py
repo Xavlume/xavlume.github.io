@@ -192,9 +192,9 @@ function parsePercent(text) { return Number(String(text).replace(/[^0-9.\-]/g, "
 function formatMoney(value) { return String(Math.round(value)); }
 function formatPercent(value) { return (value * 100).toFixed(2); }
 
-// Each entry: [tab id, input index within that tab, model field, kind, apply]
+// Each entry: [tab id, input index within that tab, model field, kind]
 // The input index is the flat position of the field inside the tab's
-// .form-grid-2 containers, in DOM order. Kinds: years | money | pct.
+// .form-grid-2 containers, in DOM order. Kinds: years | money | pct | int | plain.
 const INPUT_SCHEMA = [
   ["tab-career", 0, "currentAge", "years"],
   ["tab-career", 1, "careerStartAge", "years"],
@@ -253,7 +253,7 @@ const INPUT_SCHEMA = [
   ["tab-spend", 1, "smilePhase1", "pct"],
   ["tab-spend", 2, "smilePhase2", "pct"],
   ["tab-spend", 3, "smilePhase3", "pct"],
-  ["tab-spend", 4, "skewDegreesFreedom", "years"],
+  ["tab-spend", 4, "skewDegreesFreedom", "int"],
   ["tab-spend", 5, "deltaCap", "plain"],
   ["tab-spend", 6, "mortalityReductionFactor", "plain"],
   ["tab-spend", 7, "discountRateAnnual", "pct"],
@@ -273,7 +273,7 @@ function formatForKind(kind, value) {
   if (kind === "pct") return formatPercent(value);
   if (kind === "money") return formatMoney(value);
   if (kind === "plain") return Number(value).toFixed(2);
-  return String(value);
+  return String(value);  // years / int
 }
 
 function parseForKind(kind, text) {
@@ -473,7 +473,7 @@ function pensionAmounts(config) {
   const effectiveQppAge = Math.min(72, Math.max(60, config.pensionStartAge));
   const qppMultiplier = effectiveQppAge >= 65
     ? 1 + (effectiveQppAge - 65) * config.qppDeferralAnnual
-    : 1 - (65 - effectiveQppAge) * 0.072;
+    : 1 - (65 - effectiveQppAge) * (config.qppEarlyPenaltyAnnual || 0.06);
   const qpp = baseQpp * qppMultiplier;
 
   const effectiveOasAge = Math.min(70, Math.max(65, config.pensionStartAge));
@@ -499,7 +499,8 @@ function buildDynamicModel(config) {
     meltdownMonthly: config.meltdownBracketAnnual / 12, oasThresholdMonthly: config.oasClawbackThreshold / 12, oasClawbackRate: config.oasClawbackRate,
     employerMatchRate: config.employerMatchRate, employerMatchPercent: config.employerMatchPercent,
     realBorrowRateAnnual: config.realBorrowRateAnnual, extraMer15: config.extraMer15, extraMer20: config.extraMer20,
-    layoffAnnualProbability: config.layoffAnnualProbability, bisectionSteps: 24,
+    layoffAnnualProbability: config.layoffAnnualProbability,
+    bisectionSteps: Number(MODEL.constants.bisectionSteps) || 24,
     m75Start: Math.round((75 - config.retirementAge) * 12), postWedgeMonth: Math.round((config.pensionStartAge - config.retirementAge) * 12),
     seed: MODEL.defaultSeed, skewDegreesFreedom: config.skewDegreesFreedom,
     targetHouseCapital: config.propertyValue * config.downPaymentFraction + config.closingCosts,
@@ -797,6 +798,9 @@ function effectiveAllocationCount(leverage) {
 function selectedAllocationIndices(count, leverage) {
   const pool = allocationPool(leverage);
   if (count === pool.length) return pool;
+  // count - 1 is the stride divisor below, so a single-allocation cap must be
+  // handled explicitly (pool[NaN] would silently zero the metadata row).
+  if (count <= 1) return [pool[0]];
   return Array.from({length: count}, (_, i) => pool[Math.floor(i * (pool.length - 1) / (count - 1))]);
 }
 
@@ -1364,6 +1368,9 @@ function displayedRows() {
   if (mix === "ASSETS_ONLY") rows = rows.filter(row => !row.hasCash && !row.hasGlidepath);
   const search = applied.search;
   if (search) rows = rows.filter(row => row.name.toUpperCase().includes(search));
+  // Empty result sets must short-circuit here: the sort branch below reads
+  // rows[0] and would throw a TypeError on an undefined element.
+  if (!rows.length) return rows;
 
   // Default view is the CE leaderboard (rank 1 = highest CE). A column sort
   // (state.sort.active) re-orders the visible sub-table: descending first,
@@ -1475,7 +1482,7 @@ function rowHtml(row, index) {
 }
 
 function spacerHtml(rows) {
-  return rows > 0 ? '<tr class="v-spacer" aria-hidden="true" style="border:0"><td colspan="12" style="height:' + Math.round(rows * (tableRowHeight || 38)) + 'px; padding:0; border:0; line-height:0"></td></tr>' : "";
+  return rows > 0 ? '<tr class="v-spacer" aria-hidden="true" style="border:0"><td colspan="13" style="height:' + Math.round(rows * (tableRowHeight || 38)) + 'px; padding:0; border:0; line-height:0"></td></tr>' : "";
 }
 
 function paintWindow(rows) {
@@ -1514,7 +1521,7 @@ function renderTable(selectTop) {
 
   if (!rows.length) {
     windowedRows = [];
-    body.innerHTML = '<tr><td colspan="12" style="text-align:center; padding:32px; color:var(--text-muted); font-family:var(--font-mono)">' +
+    body.innerHTML = '<tr><td colspan="13" style="text-align:center; padding:32px; color:var(--text-muted); font-family:var(--font-mono)">' +
       (state.results ? "No strategies match your criteria." : "No results yet — open Settings and press Simulate.") + "</td></tr>";
     if (activeStrategy) drawDistributionChart();
     return;

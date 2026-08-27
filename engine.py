@@ -8,7 +8,7 @@ allocation is solved by parallel bisection on the GPU, Composite Ulcer Index
 scores are tracked per path, and the 201-point quantile ladders are reduced on
 the GPU by the same two-pass histogram shader the browser uses.
 
-It shares the shader sources, the 128-byte params buffer layout, the packed
+It shares the shader sources, the 144-byte params buffer layout, the packed
 model buffer and the allocation metadata with :mod:`build_html`, so the Python
 engine is a numerically equivalent reference for the standalone page.
 
@@ -333,10 +333,12 @@ class Engine:
         n_allocations = len(names)
         # The params buffer carries columns_per_workgroup (1 by default - the
         # reference shape): solve/track_drawdowns run that many allocation
-        # columns per thread, exactly like the browser's dispatch.
-        # The deployed page always uses the config's columns_per_workgroup
-        # (default 64) so each single dispatch stays under the Windows TDR
-        # watchdog; the stride loop produces byte-identical results.
+        # columns per thread. The engine always dispatches one workgroup row
+        # per allocation, so at columns = 1 the grid covers the allocation
+        # space exactly once; at columns > 1 the shader's stride loop re-solves
+        # some allocations (idempotent writes, byte-identical results). The
+        # browser instead shrinks the grid to ceil(allocationCount / columns),
+        # which is why the shipped default is 1 in both.
         model_values = calibration.build_model_buffer(self.config, self.price_path)
 
         storage_usage = wgpu.BufferUsage.STORAGE
@@ -400,6 +402,17 @@ class Engine:
         )
         estate_readback = self.device.create_buffer(
             size=n_allocations * estate_grid * 201 * 4,
+            usage=wgpu.BufferUsage.MAP_READ | wgpu.BufferUsage.COPY_DST,
+        )
+        # Per-batch readbacks of house outcomes and per-path UI scores. The
+        # copies happen INSIDE the batch loop below: scratch is overwritten by
+        # every subsequent batch, so it must never be re-read after the loop.
+        house_readback = self.device.create_buffer(
+            size=house_count * self.batch_size * 2 * 4,
+            usage=wgpu.BufferUsage.MAP_READ | wgpu.BufferUsage.COPY_DST,
+        )
+        ui_readback = self.device.create_buffer(
+            size=self.batch_size * n_allocations * 4,
             usage=wgpu.BufferUsage.MAP_READ | wgpu.BufferUsage.COPY_DST,
         )
 
@@ -487,7 +500,30 @@ class Engine:
             pass_.set_bind_group(0, bequest_bind_group)
             pass_.dispatch_workgroups(n_allocations * max(estate_grid, 1), 1, 1)
             pass_.end()
+            # Persist this batch's house outcomes and drawdown scores for the
+            # CPU readback below (scratch is overwritten by the next batch).
+            encoder.copy_buffer_to_buffer(
+                scratch, houses_offset * 4, house_readback, 0, house_count * count * 2 * 4
+            )
+            encoder.copy_buffer_to_buffer(
+                scratch, (houses_offset + house_count * count * 2) * 4,
+                ui_readback, 0, count * n_allocations * 4,
+            )
             self.device.queue.submit([encoder.finish()])
+            # Read this batch's house outcomes and Composite UI scores back
+            # while the readback buffers still hold this batch's data.
+            house_readback.map_sync(wgpu.MapMode.READ)
+            house_data = np.frombuffer(
+                house_readback.read_mapped(0, house_count * count * 2 * 4), dtype=np.float32
+            ).copy()
+            house_readback.unmap()
+            ui_readback.map_sync(wgpu.MapMode.READ)
+            ui_data = np.frombuffer(
+                ui_readback.read_mapped(0, count * n_allocations * 4), dtype=np.float32
+            ).copy()
+            ui_readback.unmap()
+            house_outcomes[:, offset:offset + count, :] = house_data.reshape(house_count, count, 2)
+            ui_scores[offset:offset + count, :] = ui_data.reshape(count, n_allocations)
             offset += count
 
         # Spending readback (allocation-major).
@@ -501,43 +537,9 @@ class Engine:
         readback.unmap()
         spending = spending.reshape(n_allocations, simulations)
 
-        # Per-batch readbacks of house outcomes and per-path UI scores.
-        house_readback = self.device.create_buffer(
-            size=house_count * self.batch_size * 2 * 4,
-            usage=wgpu.BufferUsage.MAP_READ | wgpu.BufferUsage.COPY_DST,
-        )
-        ui_readback = self.device.create_buffer(
-            size=self.batch_size * n_allocations * 4,
-            usage=wgpu.BufferUsage.MAP_READ | wgpu.BufferUsage.COPY_DST,
-        )
-        offset = 0
-        while offset < simulations:
-            count = min(self.batch_size, simulations - offset)
-            returns_bytes = count * total_months * len(cfg.FUNDS) * 4
-            layoffs_bytes = count * career_years * 4
-            states_bytes = house_count * path_count * count * 4 * 4
-            houses_bytes = house_count * count * 2 * 4
-            drawdown_bytes = count * n_allocations * 4
-            house_offset = returns_bytes + layoffs_bytes + states_bytes
-            drawdown_offset = house_offset + houses_bytes
-            encoder = self.device.create_command_encoder()
-            encoder.copy_buffer_to_buffer(scratch, house_offset, house_readback, 0, houses_bytes)
-            encoder.copy_buffer_to_buffer(scratch, drawdown_offset, ui_readback, 0, drawdown_bytes)
-            self.device.queue.submit([encoder.finish()])
-            house_readback.map_sync(wgpu.MapMode.READ)
-            house_data = np.frombuffer(
-                house_readback.read_mapped(0, houses_bytes), dtype=np.float32
-            ).copy()
-            house_readback.unmap()
-            ui_readback.map_sync(wgpu.MapMode.READ)
-            ui_data = np.frombuffer(
-                ui_readback.read_mapped(0, drawdown_bytes), dtype=np.float32
-            ).copy()
-            ui_readback.unmap()
-            house_outcomes[:, offset:offset + count, :] = house_data.reshape(house_count, count, 2)
-            ui_scores[offset:offset + count, :] = ui_data.reshape(count, n_allocations)
-            offset += count
-
+        # House outcomes and per-path UI scores were already read back inside
+        # the batch loop (scratch is batch-local and overwritten every batch,
+        # so a post-loop re-read would see only the LAST batch's data).
         ui_means = ui_scores.mean(axis=0)
         quantiles = self._quantiles_on_gpu(spending, simulations, n_allocations)
         estate = self._estate_final_on_gpu(

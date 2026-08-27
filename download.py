@@ -115,9 +115,21 @@ infl_monthly.index = infl_monthly.index + pd.offsets.MonthEnd(0)
 infl_monthly = infl_monthly[~infl_monthly.index.duplicated(keep='first')]
 
 infl_aligned = infl_monthly.reindex(proxies_clean.index).ffill()
-two_years_ago = infl_monthly.index[-1] - pd.DateOffset(years=2)
-trailing_avg = infl_monthly[infl_monthly.index >= two_years_ago].mean()
-infl_aligned = infl_aligned.fillna(trailing_avg)
+# Months past the CPI file's last observation (the committed
+# canadian_cpi.csv ends 2023-11) are deflated at the Bank of Canada's 2%
+# control-range midpoint - the standard forward-looking inflation anchor
+# (realized 2024-2026 Canadian CPI ran ~2-2.5%/yr). The old code
+# forward-filled the last observed monthly print (~0.76%/yr), which
+# overstated recent real returns; a trailing-average fill would have reused
+# the 2022 spike instead. Extend canadian_cpi.csv to use realized inflation.
+INFLATION_TARGET_MONTHLY = 0.02 / 12.0
+tail_mask = infl_aligned.index > infl_monthly.index[-1]
+if tail_mask.any():
+    tail_count = int(tail_mask.sum())
+    print(f"WARNING: CPI file ends {infl_monthly.index[-1].date()}; deflating "
+          f"the last {tail_count} month(s) at the Bank of Canada 2% target "
+          f"({INFLATION_TARGET_MONTHLY:.4%}/mo).")
+    infl_aligned.loc[tail_mask] = INFLATION_TARGET_MONTHLY
 
 # Calculate real returns for proxies
 proxy_ret_real = proxies_clean.copy()
@@ -133,6 +145,12 @@ for col in target_ret.columns:
 # -------------------------------------------------------------------------
 # Step 5: Optimization & Synthetic Asset Stitching (2019 - Present Overlap)
 # -------------------------------------------------------------------------
+# The proxy funds (VTSMX, VEURX, VPACX, VEIEX, XIU, XBB) are NOT the exact
+# holdings of VEQT/VGRO/VBAL, so the SLSQP fit on the 2019+ overlap maps the
+# proxies to each target fund as best as possible, and the fitted weights are
+# applied to the pre-2019 history. Deliberate approximation - do not replace
+# the fitted weights with the published mandate allocations: the proxies'
+# tracking differences are exactly what the fit corrects for.
 overlap_start = '2019-01-01'
 overlap = proxy_ret_real.loc[overlap_start:].join(target_ret.loc[overlap_start:]).dropna()
 proxy_cols = ['VTSMX', 'TSX', 'VEURX', 'VPACX', 'VEIEX', 'BONDS']

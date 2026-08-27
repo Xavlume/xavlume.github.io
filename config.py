@@ -109,6 +109,7 @@ class TaxFiscalConfig:
     max_oas_age_65: float = 8_907.72
     qpp_deferral_annual: float = 0.084             # +8.4%/yr to 72
     qpp_deferral_cap: float = 1.588                # age-72 cap
+    qpp_early_penalty_annual: float = 0.06         # -0.5%/mo before 65 (6%/yr)
     oas_deferral_annual: float = 0.072             # +7.2%/yr to 70
     oas_deferral_cap: float = 1.36
     oas75_increase: float = 1.10

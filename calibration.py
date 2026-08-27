@@ -358,7 +358,11 @@ def _pension_amounts(config):
     ratio = salary_sum / career_years if career_years > 0 else 0.0
     base_qpp = tax.max_qpp_age_65 * min(1.0, career_years / 40.0) * ratio
     eff_qpp_age = min(72.0, max(60.0, lc.pension_start_age))
-    qpp_mult = 1.0 + (eff_qpp_age - 65.0) * tax.qpp_deferral_annual if eff_qpp_age >= 65 else 1.0 - (65.0 - eff_qpp_age) * 0.072
+    if eff_qpp_age >= 65:
+        qpp_mult = 1.0 + (eff_qpp_age - 65.0) * tax.qpp_deferral_annual
+    else:
+        # QPP early-start reduction: 0.5% per month before 65 (6%/yr).
+        qpp_mult = 1.0 - (65.0 - eff_qpp_age) * tax.qpp_early_penalty_annual
     qpp = base_qpp * qpp_mult
     eff_oas_age = min(70.0, max(65.0, lc.pension_start_age))
     oas_mult = min(tax.oas_deferral_cap, 1.0 + (eff_oas_age - 65.0) * tax.oas_deferral_annual)
@@ -697,6 +701,7 @@ def model_defaults(config) -> Dict[str, object]:
         "maxQppAge65": tax.max_qpp_age_65,
         "maxOasAge65": tax.max_oas_age_65,
         "qppDeferralAnnual": tax.qpp_deferral_annual,
+        "qppEarlyPenaltyAnnual": tax.qpp_early_penalty_annual,
         "qppDeferralCap": tax.qpp_deferral_cap,
         "oasDeferralAnnual": tax.oas_deferral_annual,
         "oasDeferralCap": tax.oas_deferral_cap,
