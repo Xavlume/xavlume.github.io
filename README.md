@@ -43,7 +43,7 @@ dependencies (fonts come from the Google Fonts CDN).
 ├── .gitignore
 ├── shaders/
 │   ├── common.wgsl         # Shared buffer schemas, memory layout, PRNG and tax helpers
-│   ├── returns.wgsl        # Threefry-2x32-20 PRNG & multivariate skew-t return generator
+│   ├── returns.wgsl        # RQMC Sobol (default) / Threefry (legacy) return generator
 │   ├── accumulation.wgsl   # 5 house strategies x 7 paths, stochastic buy, FHSA/HBP
 │   ├── solver.wgsl         # 24-step parallel bisection for sustainable spending w*
 │   ├── drawdown_ui.wgsl    # Composite Ulcer Index tracking across lifecycle phases
@@ -127,10 +127,14 @@ the CMAs tab and the historical sample means of the price history.
 
 with `b_ν = √(ν/π)·Γ((ν−1)/2)/Γ(ν/2)` evaluated **exactly** for integer `ν`
 (no Lanczos approximation). The shader samples `ST` on-chip through a
-Threefry-2x32-20 counter-based PRNG: a `|N(0,1)|` skew component, a
-χ²_ν/ν scale, three independent normals, and a Cholesky rotation of the
-residual correlation `Σ − δδᵀ`. The parity test proves the NumPy reference
-and the WGSL sampler agree to float32 precision.
+digital-shift scrambled Sobol stream (the default; lower single-seed error
+at low simulation counts, identical converged CEQ) backed by a 14-bit
+Joe-Kuo direction table embedded in the page — or, under
+`?sampler=threefry`, a Threefry-2x32-20 counter-based PRNG (the legacy
+stream): a `|N(0,1)|` skew component, a χ²_ν/ν scale, three independent
+normals, and a Cholesky rotation of the residual correlation `Σ − δδᵀ`. The
+parity test proves the NumPy reference and the WGSL sampler agree to float32
+precision for every sampler variant.
 
 The two leveraged funds are deterministic transforms of VEQT:
 `r₁.₅ = max(−0.95, 1.5·r − 0.5·r_borrow − fee₁.₅)`,

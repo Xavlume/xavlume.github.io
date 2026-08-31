@@ -117,6 +117,12 @@ you**:
 - If you touch its `<script>` block, keep the `// Mock Quantitative Dataset`
   comment intact: `_replace_mock_script()` regex-requires it and the build
   raises `RuntimeError` if it is missing.
+- The `DATASET` rows and the KPI numbers are a STATIC preview of the default
+  run (RQMC Sobol, leverage OFF, 1,000 paths, seed 42), baked at snapshot
+  time — they do NOT update automatically. Regenerate them after any change
+  to the sampler/defaults/calibration with
+  `py -3.14 refresh_mock_snapshot.py` (drives the built page headlessly and
+  rewrites the template with the page's own rendered values), then rebuild.
 - Understand what the build replaces: the template's **entire** `<script>`
   block (mock dataset + static UI JS) is swapped for the real model-data
   `<script>` tag plus `RUNTIME_JS`. **JavaScript you write inside the
@@ -125,6 +131,12 @@ you**:
   - HTML / CSS → edit the template.
   - Runtime JS logic → edit `RUNTIME_JS` in `build_html.py`.
   - DOM ids/classes referenced by runtime JS must exist in the template.
+  - The RQMC Sobol direction table is embedded into `RUNTIME_JS` at build
+    time via the `__SOBOL_TABLE_B64__` marker (14-bit, base64; opt-in
+    `?sampler=rqmc`). The bit-pack/unpack helpers must stay byte-identical
+    between `calibration.sobol_pack_bits`/`sobol_unpack_bits` and the
+    `sobolTableWords()` JS decode (`tests/test_calibration.py` has a
+    roundtrip gate).
 
 ### Modifying `RUNTIME_JS` safely (string trap)
 
@@ -307,6 +319,16 @@ count produces byte-identical results. There are
 - the `Params` structs in `common.wgsl` **and** `quantiles.wgsl`
 
 Any change to the layout must be mirrored in **all four places**.
+
+`dispatch.y` selects the sampler: 0 = Threefry (legacy opt-out), 1 =
+digital-shift Sobol (the **deployed default**), 2 = Owen scramble, 3/4 =
+direct-chi2-LUT scale variants (Python engine research modes). `dispatch.w`
+carries the RQMC direction-bit width (`SOBOL_BITS` = 20 for the Python
+engine's full table; 14 for the browser's truncated embed). The browser runs
+mode 1 unless the page is loaded with `?sampler=threefry` (which restores
+the legacy stream); it requires the 14-bit Joe-Kuo table `build_html.py`
+embeds at build time (`calibration.sobol_table_b64`; falls back to
+Threefry-only with a WARNING if `sobol_dirs_u32.npy`/scipy are absent).
 
 ### 6.4 The packed model buffer (`calibration.build_model_buffer`)
 

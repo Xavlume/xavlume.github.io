@@ -219,6 +219,289 @@ def threefry_uniforms(index, pair, key0):
     return u0, u1
 
 
+# ---------------------------------------------------------------------------
+# Randomized quasi-Monte Carlo (RQMC): digital-shift scrambled Sobol.
+# ---------------------------------------------------------------------------
+# The RQMC variant (opt-in, engine.run(rqmc=True)) replaces the Threefry
+# uniform stream with *digital-shift randomized* Sobol points: the uniform
+# used for the (simulation, coordinate)-th draw is
+#
+#     u = ((sobol_u32(sim, coord) ^ shift(seed, coord)) >> 8 + 0.5) / 2^24
+#
+# sobol_u32 XORs the Joe-Kuo direction numbers for the set bits of the GLOBAL
+# simulation index; the seed-keyed digital shift randomizes the sequence per
+# seed while preserving the low-discrepancy coverage of the unit cube.  The
+# scramble depends only on (seed, coord) - never on N - so an N-run remains
+# an exact prefix of a larger run with the same seed, exactly like the
+# Threefry stream (the WGSL ``rqmc_uniform`` in common.wgsl mirrors this
+# byte-for-byte, and test_parity proves CPU/GPU agreement).
+#
+# Coordinate map (must stay in sync with returns.wgsl / common.wgsl):
+#   - returns:  month*10 + pair*2 + {0,1}, pairs_needed = (nu+5)/2 = 5 at nu=5
+#   - layoffs:  10*total_months + year
+# Total dimension for the default configuration = 10*total_months +
+# career_years = 8910 (the sequence is extensible, so N <= 2^20 - 1 is
+# covered by SOBOL_BITS = 20 direction numbers).
+SOBOL_BITS = 20
+_SOBOL_CACHE = Path(__file__).resolve().parent / "sobol_dirs_u32.npy"
+
+
+def sobol_dimensions(config) -> int:
+    """Total RQMC coordinates for the given configuration."""
+    lc = config["lifecycle"]
+    total_months = (lc.retirement_age - lc.current_age) * 12 + (
+        lc.death_age - lc.retirement_age
+    ) * 12
+    career_years = lc.retirement_age - lc.career_start_age
+    return 10 * total_months + career_years
+
+
+def sobol_direction_numbers(config, cache_path=None) -> np.ndarray:
+    """(dims, SOBOL_BITS) uint32 Joe-Kuo direction numbers.
+
+    The cached ``sobol_dirs_u32.npy`` (derived from scipy's embedded Joe-Kuo
+    tables, verified against scipy's own points) is the runtime source; if it
+    is missing and scipy is installed, the table is re-derived and cached.
+    """
+    dims = sobol_dimensions(config)
+    path = Path(cache_path) if cache_path else _SOBOL_CACHE
+    if path.exists():
+        arr = np.load(path)
+        if arr.shape == (dims, SOBOL_BITS) and arr.dtype == np.uint32:
+            return arr
+        raise RuntimeError(
+            f"sobol cache {path} has shape {arr.shape}, expected {(dims, SOBOL_BITS)}; "
+            "delete it and re-derive"
+        )
+    try:
+        from scipy.stats.qmc import Sobol
+    except ImportError as exc:
+        raise RuntimeError(
+            f"{_SOBOL_CACHE.name} missing and scipy is unavailable; regenerate the "
+            "cache with scipy installed (see calibration.sobol_direction_numbers)"
+        ) from exc
+    v = np.zeros((dims, SOBOL_BITS), dtype=np.uint32)
+    for k in range(SOBOL_BITS):
+        q = Sobol(d=dims, scramble=False, bits=32)
+        q.fast_forward(1 << k)
+        point = q.random(1)[0]
+        v[:, k] = (point.astype(np.float64) * np.float64(4294967296.0)).astype(
+            np.uint64
+        ).astype(np.uint32)
+    np.save(path, v)
+    return v
+
+
+def _sobol_u32(index: np.ndarray, coords: np.ndarray, vtable: np.ndarray) -> np.ndarray:
+    """Vectorized sobol_u32: XOR the direction numbers for the set index bits."""
+    x = np.zeros(index.shape, dtype=np.uint32)
+    for k in range(SOBOL_BITS):
+        bit = ((index >> np.uint32(k)) & np.uint32(1)).astype(bool)
+        x ^= np.where(bit, vtable[coords, k], np.uint32(0))
+    return x
+
+
+def _rqmc_shift(seed: int, coords: np.ndarray) -> np.ndarray:
+    """Digital shift per coordinate: threefry_u32(coord, 0, seed, KEY).x (WGSL)."""
+    out0, _ = _threefry_u32(coords, np.uint32(0), np.uint32(seed), np.uint32(0x9E3779B9))
+    return out0
+
+
+def rqmc_uniforms(index: np.ndarray, coords: np.ndarray, seed: int, vtable: np.ndarray) -> np.ndarray:
+    """Vectorized RQMC uniforms, mirroring the WGSL ``rqmc_uniform`` exactly."""
+    y = np.uint32(_sobol_u32(index, coords, vtable) ^ _rqmc_shift(seed, coords))
+    return ((y >> np.uint32(8)).astype(np.float64) + 0.5) / 16777216.0
+
+
+def rqmc_uniforms_owen(index: np.ndarray, coords: np.ndarray, seed: int, vtable: np.ndarray) -> np.ndarray:
+    """Vectorized Owen-scrambled RQMC uniforms, mirroring the WGSL
+    ``rqmc_uniform_owen`` byte-for-byte.
+
+    Output bit k is the Sobol bit k XORed with a hash bit that depends on the
+    already-scrambled LOWER output bits and on (coord, seed, k); the affine
+    digital shift is applied last.  The map is an invertible nested
+    permutation (each output bit is randomized by a 2-point permutation
+    conditioned on the lower bits), so the (t,s)-net property is preserved
+    while the point set is fully re-randomized per seed at every bit level.
+    """
+    x = _sobol_u32(index, coords, vtable)
+    y = np.zeros(index.shape, dtype=np.uint32)
+    golden = np.uint32(0x9E3779B9)
+    # Net digit k lives at bit position 31 - k (the direction table stores
+    # the resolution in the top bits), matching the WGSL loop.
+    for k in range(SOBOL_BITS):
+        b = np.uint32(31 - k)
+        ctr0 = np.uint32(y ^ np.uint32((coords * golden) & np.uint32(0xFFFFFFFF)))
+        out0, _ = _threefry_u32(ctr0, np.uint32(k), np.uint32(seed), np.uint32(0xD1B54A32))
+        bit = np.uint32((x >> b) ^ (out0 >> np.uint32(k))) & np.uint32(1)
+        y = np.uint32(y | (bit << b))
+    y = np.uint32(y ^ _rqmc_shift(seed, coords))
+    return ((y >> np.uint32(8)).astype(np.float64) + 0.5) / 16777216.0
+
+
+# ---------------------------------------------------------------------------
+# Direct chi-square scale LUT (RQMC variant dispatch.y >= 3).
+# ---------------------------------------------------------------------------
+# The skew-t scale W ~ chi2(nu) is normally built from nu squared normals;
+# under RQMC that couples the scale to five net coordinates, so the net's
+# one-dimensional stratification does not propagate to W (a tiny W draw makes
+# both of a shifted pair extremely volatile - the antithetic failure mode).
+# Variants 3/4 instead invert W directly from one uniform via a precomputed
+# quantile LUT: grid u_i = (i + 0.5) / CHI2_LUT_PTS, W_i = chi2(nu).ppf(u_i),
+# linear interpolation in f32.  The marginal distribution is preserved up to
+# the LUT interpolation error (~1e-7 relative at 4096 points), and the net
+# now stratifies the volatility regime itself.  The LUT is appended to the
+# Sobol direction-number buffer (offset = dims * SOBOL_BITS); the WGSL
+# ``chi2_inv_cdf`` (common.wgsl) mirrors this byte-for-byte.
+CHI2_LUT_PTS = 65536
+CHI2_LUT_U_MIN = 1e-7
+CHI2_LUT_U_MAX = 1.0 - 1e-7
+_CHI2_LUT_CACHE = {}
+
+
+def chi2_lut(config, pts: int = CHI2_LUT_PTS) -> np.ndarray:
+    """(pts,) float32 W values on a LOG-uniform grid in u for chi2(skew df).
+
+    The lower tail of chi2 is extremely steep in u, so a uniform-u grid
+    collapses nearly the whole extreme-volatility regime (W < ~0.09, which is
+    what drives the CEQ's lower tail) into its bottom bin.  A log-uniform
+    grid from 1e-7 resolves that regime bin-by-bin instead: the bottom bin
+    spans W in (0, chi2.ppf(~1.5e-7)) ~= (0, 0.007).
+    """
+    df = float(config["calibration"].skew_degrees_freedom)
+    key = (df, pts)
+    if key in _CHI2_LUT_CACHE:
+        return _CHI2_LUT_CACHE[key]
+    from scipy.stats import chi2 as _chi2
+    lo = np.log(CHI2_LUT_U_MIN)
+    span = np.log(CHI2_LUT_U_MAX) - lo
+    grid = np.exp(lo + span * (np.arange(pts, dtype=np.float64) + 0.5) / pts)
+    vals = _chi2.ppf(grid, df).astype(np.float32)
+    _CHI2_LUT_CACHE[key] = vals
+    return vals
+
+
+def chi2_lut_index(u, pts: int = CHI2_LUT_PTS):
+    """Log-grid index map, matching the WGSL ``chi2_inv_cdf`` formula.
+
+    ``frac`` is clamped to [0, 1): values outside the grid (u below U_MIN or
+    above U_MAX) saturate at the edge bin rather than extrapolating - the
+    extrapolation would pull W negative in the lower tail and push inv_scale
+    to infinity (the WGSL clamps identically).
+    """
+    x = np.log(np.asarray(u, dtype=np.float64) / CHI2_LUT_U_MIN) / np.log(
+        CHI2_LUT_U_MAX / CHI2_LUT_U_MIN
+    ) * float(pts)
+    i = np.clip(np.floor(np.clip(x, 0.0, pts - 1.0)).astype(np.int64), 0, pts - 1)
+    frac = np.clip(x - i.astype(np.float64), 0.0, 1.0)
+    return i, frac
+
+
+# ---------------------------------------------------------------------------
+# Compact browser table (RQMC in the standalone page via ?sampler=rqmc)
+# ---------------------------------------------------------------------------
+# The deployed page embeds the Joe-Kuo direction table truncated to its TOP
+# SOBOL_BROWSER_BITS bits (14), bit-packed LSB-first and base64-encoded.  14
+# bits cover simulation indices < 2^14 = 16,384 (the UI caps runs at 10,000
+# paths per seed).  Storing the top 14 bits is LOSSLESS for k <= 14: each
+# direction number occupies bits 31..(32-k), all inside the top-14 window.
+# The WGSL load-shifts each stored word back with `<< (32 - bits)`, which
+# reconstructs the exact full 32-bit direction number, so the browser stream
+# is byte-identical to the Python engine's 20-bit path for k <= 14.
+SOBOL_BROWSER_BITS = 14
+
+
+def sobol_compact_topbits(config, bits: int = SOBOL_BROWSER_BITS,
+                          dirs: Optional[np.ndarray] = None) -> np.ndarray:
+    """(dims, bits) uint32 of the top `bits` bits of each direction number."""
+    v = sobol_direction_numbers(config) if dirs is None else dirs
+    return (v[:, :bits] >> np.uint32(32 - bits)).astype(np.uint32, copy=False)
+
+
+def sobol_pack_bits(compact: np.ndarray, bits: int = SOBOL_BROWSER_BITS) -> bytes:
+    """LSB-first bit-pack of the (dims, bits) table into a byte string.
+
+    A field starting at bit offset sh within a byte spans THREE bytes when
+    sh + bits > 16 (its first (8-sh) bits in byte b0, then 8 bits in byte
+    b0+1, then the remaining bits in byte b0+2); the third byte is only
+    written when actually needed.
+    """
+    n = int(compact.size)
+    total_bits = n * bits
+    out = bytearray((total_bits + 7) // 8)
+    flat = compact.reshape(-1)
+    for i in range(n):
+        val = int(flat[i])
+        bit = i * bits
+        b0 = bit >> 3
+        sh = bit & 7
+        out[b0] |= (val << sh) & 0xFF
+        if sh + bits > 8:
+            out[b0 + 1] |= (val >> (8 - sh)) & 0xFF
+        if sh + bits > 16:
+            out[b0 + 2] |= (val >> (16 - sh)) & 0xFF
+    return bytes(out)
+
+
+def sobol_unpack_bits(data: bytes, bits: int = SOBOL_BROWSER_BITS) -> np.ndarray:
+    """Inverse of sobol_pack_bits: 1-D uint32 array, one field per entry.
+
+    Mirrors the packer's three-byte case (fields whose bit offset within a
+    byte plus the width exceeds 16 bits also read byte b0+2).
+    """
+    total = (len(data) * 8) // bits
+    out = np.empty(total, dtype=np.uint32)
+    mask = (1 << bits) - 1
+    for i in range(total):
+        bit = i * bits
+        b0 = bit >> 3
+        sh = bit & 7
+        val = data[b0] >> sh
+        if sh + bits > 8:
+            val |= data[b0 + 1] << (8 - sh)
+        if sh + bits > 16:
+            val |= data[b0 + 2] << (16 - sh)
+        out[i] = val & mask
+    return out
+
+
+def sobol_table_b64(config, bits: int = SOBOL_BROWSER_BITS) -> str:
+    """base64 of the bit-packed truncated table (the HTML embed form)."""
+    import base64
+    return base64.b64encode(sobol_pack_bits(sobol_compact_topbits(config, bits), bits)).decode("ascii")
+
+
+def sobol_rqmc_buffer(config) -> np.ndarray:
+    """Full RQMC storage buffer: the (dims, SOBOL_BITS) u32 direction table
+    in TOP-BITS form, followed by the chi2 LUT as raw f32 bits.  Offset (in
+    u32 words) of the LUT is dims * SOBOL_BITS, which the shader derives as
+    (10*totalMonths + careerYears) * params.dispatch.w.
+
+    ``sobol_direction_numbers`` keeps the canonical FULL 32-bit words (the
+    on-disk npy and the CPU mirror use those); this buffer stores each entry
+    shifted right by (32 - SOBOL_BITS) - the WGSL load-shifts back with
+    << (32 - bits), which is EXACT for k <= bits because direction numbers
+    occupy bits 31..(32-k).  The browser's embedded 14-bit table uses the
+    same convention with fewer bits.
+    """
+    dirs = sobol_direction_numbers(config)
+    stored = (dirs >> np.uint32(32 - SOBOL_BITS)).astype(np.uint32, copy=False)
+    lut = chi2_lut(config)
+    return np.concatenate(
+        [stored.reshape(-1), lut.view(np.uint32)]
+    ).astype(np.uint32, copy=False)
+
+
+def _chi2_lut_interp(u, lut: np.ndarray) -> np.ndarray:
+    """f32-consistent linear interpolation of the LUT (float64 inputs/table,
+    result float32-cast)."""
+    i, frac = chi2_lut_index(u)
+    n = len(lut)
+    lo = lut[i]
+    hi = lut[np.minimum(i + 1, n - 1)]
+    return (lo + frac * (hi - lo)).astype(np.float32).astype(np.float64)
+
+
 def _box_muller(u1, u2):
     radius = np.sqrt(-2.0 * np.log(u1))
     theta = 6.283185307179586 * u2
@@ -226,11 +509,19 @@ def _box_muller(u1, u2):
 
 
 def returns_cpu(simulations: int, total_months: int, model: Dict[str, object],
-                seed: int, config: Dict[str, object]) -> np.ndarray:
+                seed: int, config: Dict[str, object],
+                rqmc: bool = False, owen: bool = False,
+                direct_w: bool = False) -> np.ndarray:
     """Deterministic CPU mirror of the WGSL ``generate_returns`` pass.
 
     Returns a float32 array of shape (simulations, total_months, 5) with the
-    five underlying fund monthly returns. Used by the parity test.
+    five underlying fund monthly returns. Used by the parity test. With
+    ``rqmc=True`` the uniform source is the digital-shift scrambled Sobol
+    stream (``rqmc_uniforms``); ``rqmc=True, owen=True`` selects the
+    Owen-nested scramble (``rqmc_uniforms_owen``); ``direct_w=True`` replaces
+    the five scale normals with one LUT-inverted chi2 draw from the second
+    uniform of pair 0 (net stratification of the volatility regime itself).
+    All branches match the WGSL byte-for-byte within f32 precision.
     """
     nu = model["nu"]
     xi = model["xi"].astype(np.float64)
@@ -244,13 +535,39 @@ def returns_cpu(simulations: int, total_months: int, model: Dict[str, object],
     sims = np.repeat(np.arange(simulations, dtype=np.uint32), total_months)
     counter = sims * np.uint32(total_months) + months
 
+    vtable = sobol_direction_numbers(config) if rqmc else None
+    lut = chi2_lut(config) if (rqmc and direct_w) else None
+
     scale = np.zeros(counts)
     skew = np.zeros(counts)
     fund_normal = np.zeros((counts, 3))
     base = np.zeros((counts, 3))
     for pair in range(pairs_needed):
-        u0, u1 = threefry_uniforms(counter, np.uint32(pair), np.uint32(seed))
+        if rqmc:
+            coords = months * np.uint32(10) + np.uint32(pair) * np.uint32(2)
+            if owen:
+                u0 = rqmc_uniforms_owen(sims, coords, seed, vtable)
+                u1 = rqmc_uniforms_owen(sims, coords + np.uint32(1), seed, vtable)
+            else:
+                u0 = rqmc_uniforms(sims, coords, seed, vtable)
+                u1 = rqmc_uniforms(sims, coords + np.uint32(1), seed, vtable)
+        else:
+            u0, u1 = threefry_uniforms(counter, np.uint32(pair), np.uint32(seed))
         n0, n1 = _box_muller(u0, u1)
+        if direct_w:
+            # Scale comes from ONE uniform (pair 0's second slot) via the LUT;
+            # the five scale normals are freed.  Fund normals stay at pairs
+            # 3/4 exactly like the non-direct map, so the only change is the
+            # u -> W coupling (marginals preserved).
+            if pair == 0:
+                skew += np.abs(n0)
+                scale += _chi2_lut_interp(u1, lut)
+            elif pair == 3:
+                fund_normal[:, 0] += n0
+                fund_normal[:, 1] += n1
+            elif pair == 4:
+                fund_normal[:, 2] += n0
+            continue
         t0 = pair * 2
         t1 = pair * 2 + 1
         if t0 == 0:

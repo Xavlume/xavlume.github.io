@@ -29,13 +29,42 @@ fn generate_returns(@builtin(global_invocation_id) gid: vec3<u32>) {
     let seed = params.generate.x;
     // Linear normal stream t = 0..: t=0 skew, t=1..nu chi-square components,
     // t=nu+1..nu+3 the three independent normals driving the underlying funds.
+    // Modes 3/4 (params.dispatch.y >= 3) instead draw the chi2 scale directly
+    // from the second uniform of pair 0 via the LUT, keeping the fund normals
+    // at pairs 3/4 - same marginals, volatility regime stratified per uniform.
+    let direct_w = params.dispatch.y >= 3u;
     let pairs_needed = (nu + 5u) / 2u;
     var scale = 0.0;
     var skew = 0.0;
     var fund_normal = vec3<f32>(0.0);
     for (var pair = 0u; pair < pairs_needed; pair += 1u) {
-        let uniforms = threefry_uniforms(counter, pair, seed);
-        let pair_normal = box_muller(uniforms.x, uniforms.y);
+        var u0 = 0.0;
+        var u1 = 0.0;
+        if (params.dispatch.y != 0u) {
+            // RQMC: coordinate month*10 + pair*2 (+slot) of the (seed, global
+            // sim) scrambled Sobol point; dispatch.y selects the scramble
+            // (odd = digital shift, even > 0 = Owen nested).
+            let coord = month * 10u + pair * 2u;
+            u0 = rqmc_draw(global_sim, coord, seed, params.dispatch.y);
+            u1 = rqmc_draw(global_sim, coord + 1u, seed, params.dispatch.y);
+        } else {
+            let uniforms = threefry_uniforms(counter, pair, seed);
+            u0 = uniforms.x;
+            u1 = uniforms.y;
+        }
+        let pair_normal = box_muller(u0, u1);
+        if (direct_w) {
+            if (pair == 0u) {
+                skew = abs(pair_normal.x);
+                scale = chi2_inv_cdf(u1, (10u * params.dimensions.z + career_years()) * rqmc_direction_bits());
+            } else if (pair == 3u) {
+                fund_normal.x = pair_normal.x;
+                fund_normal.y = pair_normal.y;
+            } else if (pair == 4u) {
+                fund_normal.z = pair_normal.x;
+            }
+            continue;
+        }
         let t0 = pair * 2u;
         let t1 = pair * 2u + 1u;
         if (t0 == 0u) {
@@ -115,6 +144,11 @@ fn generate_layoffs(@builtin(global_invocation_id) gid: vec3<u32>) {
     let global_sim = params.generate.w + index / years;
     let year = index % years;
     let counter = global_sim * years + year;
-    let u = threefry_uniform(counter, params.generate.x ^ 0x1F2E3D4Cu, 0x90D3A51Fu);
+    var u = 0.0;
+    if (params.dispatch.y != 0u) {
+        u = rqmc_draw(global_sim, params.dimensions.z * 10u + year, params.generate.x, params.dispatch.y);
+    } else {
+        u = threefry_uniform(counter, params.generate.x ^ 0x1F2E3D4Cu, 0x90D3A51Fu);
+    }
     scratch[returns_region_size() + index] = select(1.0, 0.5, u < params.generate1.w);
 }

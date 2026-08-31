@@ -38,6 +38,8 @@ MODEL_MARKER = "__MODEL_JSON__"
 SHADER_MARKER = "__SHADER_JSON__"
 QUANTILES_MARKER = "__QUANTILES_JSON__"
 BEQUEST_MARKER = "__BEQUEST_JSON__"
+SOBOL_TABLE_MARKER = "__SOBOL_TABLE_B64__"
+SOBOL_DIMS_MARKER = "__SOBOL_TABLE_DIMS__"
 
 RUNTIME_JS = r"""
 "use strict";
@@ -137,6 +139,8 @@ async function dumpDiagnostics() {
     adapterText: state.adapterText,
     activeRun: !!state.activeRun,
     deviceLostReason: state.deviceLostReason || null,
+    samplerRequested: new URLSearchParams(location.search).get("sampler") || null,
+    sobolTableBuiltIn: sobolTableAvailable(),
     totals: {allocations: TOTAL_ALLOCATIONS, runAllocations: RUN_ALLOCATION_COUNT}
   }));
   if (navigator.gpu) {
@@ -603,9 +607,62 @@ function buildDynamicModel(config) {
 }
 
 // ---------------------------------------------------------------------------
+// RQMC (Sobol) sampler — the DEFAULT; ?sampler=threefry opts out to legacy.
+// The page embeds the Joe-Kuo direction table truncated to its TOP 14 bits
+// (bit-packed, base64); 14 bits cover simulation indices < 2^14 = 16,384
+// (the UI caps runs at 10,000 paths per seed).  The WGSL load-shifts each
+// stored word back to its full 32-bit position (<< (32 - bits)), which
+// reconstructs the exact direction number for every k <= 14, so the
+// browser's stream is byte-identical to the Python engine's 20-bit
+// digital-shift Sobol path.  The default is ALWAYS Threefry; ?sampler=rqmc
+// is the only way to switch.  Non-default ages/horizons (coordinates
+// beyond the embedded table) and runs >= 2^14 paths fall back to Threefry
+// with a console warning.
+// ---------------------------------------------------------------------------
+const SOBOL_RQMC_BITS = 14;
+const SOBOL_TABLE_DIMS = __SOBOL_TABLE_DIMS__;
+const SOBOL_TABLE_B64 = "__SOBOL_TABLE_B64__";
+function sobolTableAvailable() { return SOBOL_TABLE_B64.length > 8 && SOBOL_TABLE_DIMS > 0; }
+let _sobolTableWords = null;
+function sobolTableWords() {
+  if (_sobolTableWords) return _sobolTableWords;
+  const raw = Uint8Array.from(atob(SOBOL_TABLE_B64), c => c.charCodeAt(0));
+  const total = (raw.length * 8 / SOBOL_RQMC_BITS) | 0;
+  const words = new Uint32Array(total);
+  let bitPos = 0;
+  for (let i = 0; i < total; i++, bitPos += SOBOL_RQMC_BITS) {
+    const byteIdx = bitPos >> 3, shift = bitPos & 7;
+    let val = raw[byteIdx] >>> shift;
+    if (shift + SOBOL_RQMC_BITS > 8) val |= raw[byteIdx + 1] << (8 - shift);
+    if (shift + SOBOL_RQMC_BITS > 16) val |= raw[byteIdx + 2] << (16 - shift);
+    words[i] = val & ((1 << SOBOL_RQMC_BITS) - 1);
+  }
+  _sobolTableWords = words;
+  return words;
+}
+function rqmcSamplerEnabled(dynamic, simulations) {
+  // RQMC digital-shift Sobol is the DEFAULT (lower single-seed error at low
+  // simulation counts, same converged CEQ); ?sampler=threefry opts out to
+  // the legacy counter-based Threefry stream.
+  if (!sobolTableAvailable()) { logWarn("RQMC sampler unavailable: the build was made without the Sobol table (sobol_dirs_u32.npy / scipy missing at build time). Continuing with Threefry."); return false; }
+  const url = new URLSearchParams(location.search);
+  if (url.get("sampler") === "threefry") return false;
+  const dims = dynamic.constants.totalMonths * 10 + dynamic.constants.careerYears;
+  if (dims > SOBOL_TABLE_DIMS) {
+    logWarn("RQMC disabled: this configuration needs", dims, "Sobol coordinates but the embedded table only has", SOBOL_TABLE_DIMS, "(non-default ages/horizons). Continuing with Threefry.");
+    return false;
+  }
+  if (simulations >= (1 << SOBOL_RQMC_BITS)) {
+    logWarn("RQMC disabled: the run needs", simulations, "paths but the embedded 14-bit table covers up to", (1 << SOBOL_RQMC_BITS) - 1, ". Continuing with Threefry.");
+    return false;
+  }
+  return true;
+}
+
+// ---------------------------------------------------------------------------
 // WebGPU pipeline
 // ---------------------------------------------------------------------------
-function makeParams(dynamic, simulations, allocations, batchSims, simOffset, columnsPerWorkgroup = 1, generateLeveraged = true) {
+function makeParams(dynamic, simulations, allocations, batchSims, simOffset, columnsPerWorkgroup = 1, generateLeveraged = true, rqmcBits = 0) {
   const dimensions = dynamic.constants;
   const buffer = new ArrayBuffer(144);
   new Uint32Array(buffer, 0, 4).set([simulations, allocations, dimensions.totalMonths, dimensions.accumMonths]);
@@ -616,9 +673,11 @@ function makeParams(dynamic, simulations, allocations, batchSims, simOffset, col
   new Float32Array(buffer, 80, 4).set([dimensions.oasClawbackRate, dimensions.employerMatchRate, dimensions.employerMatchPercent, dimensions.funds.length]);
   new Uint32Array(buffer, 96, 4).set([dimensions.seed, dimensions.skewDegreesFreedom, batchSims, simOffset]);
   new Float32Array(buffer, 112, 4).set([dimensions.realBorrowRateAnnual / 12, dimensions.extraMer15 / 12, dimensions.extraMer20 / 12, dimensions.layoffAnnualProbability]);
+  // dispatch.y: 1 under ?sampler=rqmc (digital-shift Sobol), else Threefry.
   // dispatch.z: 1 = generate the leveraged return series (VEQT1.5/VEQT2),
   // 0 = skip them (leverage-off runs never read funds 1/2).
-  new Uint32Array(buffer, 128, 4).set([columnsPerWorkgroup, 0, generateLeveraged ? 1 : 0, 0]);
+  // dispatch.w: RQMC direction-bit width (14); 0 = RQMC off.
+  new Uint32Array(buffer, 128, 4).set([columnsPerWorkgroup, rqmcBits > 0 ? 1 : 0, generateLeveraged ? 1 : 0, rqmcBits]);
   return buffer;
 }
 
@@ -856,11 +915,13 @@ async function simulate(settings, run) {
   const columnsPerWorkgroup = Math.max(1, DEFAULTS.columnsPerWorkgroup | 0);
   const dispatchAllocations = Math.max(1, Math.ceil(allocationCount / columnsPerWorkgroup));
   const totalSims = settings.simulations;
+  const rqmcBits = rqmcSamplerEnabled(dynamic, totalSims) ? SOBOL_RQMC_BITS : 0;
   logInfo("Simulation start:", {simulations: totalSims, allocations: allocationCount, leverage, batchSize,
           columnsPerWorkgroup, dispatchAllocations,
           totalMonths: dynamic.constants.totalMonths, careerYears: dynamic.constants.careerYears,
           pathCount: dynamic.constants.funds.length, houseCount: C.houseCount,
-          retirementAge: settings.model.retirementAge, pensionStartAge: settings.model.pensionStartAge});
+          retirementAge: settings.model.retirementAge, pensionStartAge: settings.model.pensionStartAge,
+          sampler: rqmcBits ? "rqmc-sobol (default)" : "threefry (legacy)"});
   // Preflight: the spending and drawdown buffers are both
   // allocationCount x totalSims x 4 bytes; a run that needs more than the
   // GPU's storage-buffer binding limit would fail with an opaque WebGPU
@@ -910,7 +971,12 @@ async function simulate(settings, run) {
   }
   const dummyA = device.createBuffer({size: 4, usage: GPUBufferUsage.STORAGE});
   const dummyB = device.createBuffer({size: 4, usage: GPUBufferUsage.STORAGE});
-  const batchBindings = [scratchBuffer, allocationBuffer, modelBuffer, dummyA, dummyB, spendingBuffer];
+  // Binding 4: the truncated Sobol direction table under ?sampler=rqmc (the
+  // shader only reads it when dispatch.y != 0); the 4-byte dummy otherwise.
+  const sobolBuffer = rqmcBits ? staticBuffer(device, sobolTableWords()) : null;
+  const batchBindings = rqmcBits
+    ? [scratchBuffer, allocationBuffer, modelBuffer, sobolBuffer, dummyB, spendingBuffer]
+    : [scratchBuffer, allocationBuffer, modelBuffer, dummyA, dummyB, spendingBuffer];
   // Global packed copy of the per-batch scratch data for the terminal-estate
   // (bequest) pass: monthly returns, retirement states and house outcomes,
   // all indexed by the GLOBAL simulation id, in one buffer (mirrors the main
@@ -934,7 +1000,7 @@ async function simulate(settings, run) {
       const batchStarted = performance.now();
       logDebug("Batch", (batchNumber + 1) + "/" + totalBatches, "sims", offset, "..", offset + count - 1);
       const params = device.createBuffer({size: 144, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST});
-      device.queue.writeBuffer(params, 0, makeParams(dynamic, totalSims, allocationCount, count, offset, columnsPerWorkgroup, leverage));
+      device.queue.writeBuffer(params, 0, makeParams(dynamic, totalSims, allocationCount, count, offset, columnsPerWorkgroup, leverage, rqmcBits));
       const bindGroup = device.createBindGroup({layout: context.layout, entries: [params, ...batchBindings].map((buffer, binding) => ({binding, resource: {buffer}}))});
       const bequestBindGroup = device.createBindGroup({layout: context.bequestLayout, entries: [params, spendingBuffer, simDataBuffer, allocationBuffer, modelBuffer, estateBuffer, estateHistBuffer].map((buffer, binding) => ({binding, resource: {buffer}}))});
       let encoder = device.createCommandEncoder();
@@ -1104,7 +1170,7 @@ async function simulate(settings, run) {
       results.push({name: names[index], quantiles, median: quantiles[100], ui: uiMeans[index], estate,
                     buyAge: hs.buyAge, p90BuyAge: hs.p90BuyAge, mortgage: hs.mortgage});
     }
-    return {results, names, dynamic};
+    return {results, names, dynamic, sampler: rqmcBits ? "rqmc" : "threefry"};
   } catch (error) {
     logError("WebGPU simulation failed (sims = " + totalSims + ", allocations = " + allocationCount + ", batch = " + batchSize + "):",
              error && error.message ? error.message : error, error && error.stack ? "\n" + error.stack : "");
@@ -1116,6 +1182,7 @@ async function simulate(settings, run) {
     quantileBuffer.destroy(); quantileReadback.destroy();
     drawdownReadback.destroy(); houseReadback.destroy();
     simDataBuffer.destroy(); estateBuffer.destroy(); estateReadback.destroy(); estateHistBuffer.destroy();
+    if (sobolBuffer) sobolBuffer.destroy();
     dummyA.destroy(); dummyB.destroy();
   }
 }
@@ -1760,9 +1827,10 @@ async function runSimulation() {
     state.results = output.results;
     state.dynamic = output.dynamic;
     const totalElapsed = performance.now() - totalStart;
-    setText("completed-meta", settings.simulations.toLocaleString("en-US") + " paths");
+    const samplerNote = output.sampler === "rqmc" ? " · RQMC Sobol" : " · Threefry (?sampler=threefry)";
+    setText("completed-meta", settings.simulations.toLocaleString("en-US") + " paths" + samplerNote);
     setText("timing-meta", (totalElapsed / 1000).toFixed(2) + "s total");
-    setText("run-message", "Completed " + output.names.length.toLocaleString("en-US") + " allocations x " + settings.simulations.toLocaleString("en-US") + " paths.");
+    setText("run-message", "Completed " + output.names.length.toLocaleString("en-US") + " allocations x " + settings.simulations.toLocaleString("en-US") + " paths." + (output.sampler === "rqmc" ? " Sampling: RQMC Sobol." : " Sampling: Threefry (?sampler=threefry)."));
     setProgress(100, 100, "Complete. Adjust controls below, then press \u201CUpdate Table & Re-Rank\u201D.");
     logInfo("Simulation completed:", output.names.length, "allocations x", settings.simulations, "paths in", (totalElapsed / 1000).toFixed(2), "s");
     updatePhaseLabels();
@@ -2090,6 +2158,22 @@ def build_html(price_path=DEFAULT_PRICE_PATH, output_path=DEFAULT_OUTPUT_PATH, c
     runtime_js = runtime_js.replace(SHADER_MARKER, shader_json)
     runtime_js = runtime_js.replace(QUANTILES_MARKER, quantiles_json)
     runtime_js = runtime_js.replace(BEQUEST_MARKER, bequest_json)
+    # 14-bit truncated Joe-Kuo table for ?sampler=rqmc (bit-packed, base64).
+    # Falls back to an empty table (RQMC opt-in unavailable) if the direction
+    # numbers cannot be loaded or derived at build time.
+    try:
+        sobol_b64 = calibration.sobol_table_b64(config)
+        sobol_dims = calibration.sobol_dimensions(config)
+        print(f"Embedded {calibration.SOBOL_BROWSER_BITS}-bit Sobol table: "
+              f"{len(sobol_b64) / 1024:.0f} KB base64, {sobol_dims} coordinates "
+              f"(opt-in via ?sampler=rqmc)")
+    except Exception as exc:
+        sobol_b64 = ""
+        sobol_dims = 0
+        print(f"WARNING: ?sampler=rqmc unavailable ({exc}); the page will run "
+              "Threefry only.")
+    runtime_js = runtime_js.replace(SOBOL_TABLE_MARKER, sobol_b64)
+    runtime_js = runtime_js.replace(SOBOL_DIMS_MARKER, str(sobol_dims))
 
     html = TEMPLATE_PATH.read_text(encoding="utf-8")
     html = _inject_status_strip(html, payload)

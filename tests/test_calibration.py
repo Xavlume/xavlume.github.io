@@ -239,5 +239,138 @@ class TestPayload(unittest.TestCase):
         self.assertRegex(payload["returnModel"]["dateStart"], r"^\d{4}-\d{2}-\d{2}$")
 
 
+class TestSobolRqmc(unittest.TestCase):
+    """The committed Joe-Kuo Sobol direction-number asset (RQMC sampler)."""
+
+    def test_direction_number_table_shape_and_properties(self):
+        config = cfg.instance_config()
+        dims = cal.sobol_dimensions(config)
+        lc = config["lifecycle"]
+        total_months = (lc.retirement_age - lc.current_age) * 12 + (
+            lc.death_age - lc.retirement_age
+        ) * 12
+        career_years = lc.retirement_age - lc.career_start_age
+        self.assertEqual(dims, 10 * total_months + career_years)
+        v = cal.sobol_direction_numbers(config)
+        self.assertEqual(v.shape, (dims, cal.SOBOL_BITS))
+        self.assertEqual(v.dtype, np.uint32)
+        # Every bit level must have at least one non-zero direction number
+        # across the dimensions (a degenerate level would zero the stream).
+        self.assertTrue(np.all(v.any(axis=0)), "every direction-number column must be non-trivial")
+
+    def test_first_direction_number_is_msb(self):
+        # Point index 1 = v[:, 0]: every coordinate's first direction number
+        # must be exactly 2^31 (the standard Sobol marginals).
+        config = cfg.instance_config()
+        v = cal.sobol_direction_numbers(config)
+        self.assertTrue(np.all(v[:, 0] == np.uint32(0x80000000)))
+
+
+class TestChi2Lut(unittest.TestCase):
+    """The direct-chi2 quantile LUT appended to the RQMC buffer."""
+
+    def test_lut_monotone_and_bounded(self):
+        config = cfg.instance_config()
+        lut = cal.chi2_lut(config)
+        self.assertEqual(lut.shape, (cal.CHI2_LUT_PTS,))
+        self.assertEqual(lut.dtype, np.float32)
+        self.assertTrue(np.all(np.diff(lut.astype(np.float64)) > 0.0), "LUT must be strictly increasing")
+        self.assertGreater(lut[0], 0.0)   # lower tail resolved (not collapsed)
+        self.assertLess(lut[0], 0.02)     # floor ~ chi2(5).ppf(1e-7)
+        self.assertGreater(lut[-1], 20.0)
+
+    def test_lut_matches_scipy_at_grid(self):
+        from scipy.stats import chi2 as _chi2
+        config = cfg.instance_config()
+        lut = cal.chi2_lut(config)
+        lo = np.log(cal.CHI2_LUT_U_MIN)
+        span = np.log(cal.CHI2_LUT_U_MAX) - lo
+        pts = cal.CHI2_LUT_PTS
+        grid = np.exp(lo + span * (np.arange(pts, dtype=np.float64) + 0.5) / pts)
+        ref = _chi2.ppf(grid, float(config["calibration"].skew_degrees_freedom)).astype(np.float32)
+        self.assertLess(float(np.abs(lut - ref).max()), 1e-4)
+
+    def test_index_clamps_out_of_range(self):
+        # u below U_MIN and above U_MAX must saturate at the edge bins
+        # (frac clamped to [0, 1]), never extrapolate W negative.
+        i, frac = cal.chi2_lut_index(np.array([1e-12, 0.5, 1.0 - 1e-12]))
+        self.assertEqual(int(i[0]), 0)
+        self.assertEqual(frac[0], 0.0)
+        self.assertEqual(int(i[2]), cal.CHI2_LUT_PTS - 1)
+        self.assertEqual(frac[2], 1.0)
+        self.assertGreaterEqual(frac[1], 0.0)
+        self.assertLessEqual(frac[1], 1.0)
+
+    def test_rqmc_buffer_appends_lut(self):
+        config = cfg.instance_config()
+        buf = cal.sobol_rqmc_buffer(config)
+        dims = cal.sobol_dimensions(config)
+        off = dims * cal.SOBOL_BITS
+        self.assertEqual(buf.shape[0], off + cal.CHI2_LUT_PTS)
+        # LUT bits round-trip to the same f32 values
+        self.assertTrue(
+            np.array_equal(buf[off:].view(np.float32), cal.chi2_lut(config))
+        )
+
+    def test_rqmc_buffer_stores_top_bits(self):
+        # The full storage buffer holds each direction number shifted right
+        # by (32 - SOBOL_BITS); the WGSL load-shift reconstructs the exact
+        # word, so for k <= SOBOL_BITS the truncated form is lossless.
+        config = cfg.instance_config()
+        v = cal.sobol_direction_numbers(config)
+        stored = (v >> np.uint32(32 - cal.SOBOL_BITS)).astype(np.uint32)
+        self.assertTrue(np.array_equal(
+            (stored.astype(np.uint64) << np.uint64(32 - cal.SOBOL_BITS)).astype(np.uint32),
+            v,
+        ), "top-bits storage must reconstruct the full direction numbers")
+
+
+class TestSobolCompactTable(unittest.TestCase):
+    """The 14-bit browser table (?sampler=rqmc)."""
+
+    def test_truncation_is_lossless_for_browser_bits(self):
+        config = cfg.instance_config()
+        v = cal.sobol_direction_numbers(config)
+        bits = cal.SOBOL_BROWSER_BITS
+        top = (v[:, :bits] >> np.uint32(32 - bits)).astype(np.uint32)
+        back = (top.astype(np.uint64) << np.uint64(32 - bits)).astype(np.uint32)
+        self.assertTrue(np.array_equal(back, v[:, :bits]),
+                        "top-14 truncation must be exact for k <= 14")
+
+    def test_pack_unpack_roundtrip(self):
+        config = cfg.instance_config()
+        bits = cal.SOBOL_BROWSER_BITS
+        c = cal.sobol_compact_topbits(config, bits)
+        packed = cal.sobol_pack_bits(c, bits)
+        unpacked = cal.sobol_unpack_bits(packed, bits)
+        self.assertTrue(np.array_equal(unpacked, c.reshape(-1)))
+
+    def test_compact_net_matches_full_table_for_small_indices(self):
+        # For simulation indices < 2^14 the compact table's reconstructed
+        # direction numbers are identical to the full table's, so the RQMC
+        # stream must be byte-identical.
+        config = cfg.instance_config()
+        v = cal.sobol_direction_numbers(config)
+        bits = cal.SOBOL_BROWSER_BITS
+        compact = cal.sobol_compact_topbits(config, bits)
+        full_shape = np.zeros((v.shape[0], 20), dtype=np.uint32)
+        full_shape[:, :bits] = (compact.astype(np.uint64) << np.uint64(32 - bits)).astype(np.uint32)
+        rng = np.random.default_rng(7)
+        idx = rng.integers(0, 1 << bits, size=200).astype(np.uint32)
+        coords = rng.integers(0, v.shape[0], size=200).astype(np.uint32)
+        u_full = cal.rqmc_uniforms(idx, coords, 42, v)
+        u_compact = cal.rqmc_uniforms(idx, coords, 42, full_shape)
+        self.assertTrue(np.array_equal(u_full, u_compact))
+
+    def test_table_b64_roundtrip(self):
+        config = cfg.instance_config()
+        import base64
+        b64 = cal.sobol_table_b64(config)
+        self.assertGreater(len(b64), 1000)
+        c = cal.sobol_compact_topbits(config)
+        packed = cal.sobol_pack_bits(c)
+        self.assertEqual(base64.b64decode(b64), packed)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -64,6 +64,68 @@ class TestReturnParity(unittest.TestCase):
         diff = np.abs(cpu.astype(np.float64) - gpu.astype(np.float64))
         self.assertLess(float(diff.max()), RETURN_TOLERANCE, f"max |cpu-gpu| = {diff.max():.2e}")
 
+    def test_rqmc_returns_match_cpu_reference(self):
+        # The RQMC (digital-shift scrambled Sobol) branch must also agree
+        # CPU-vs-GPU: calibration.returns_cpu(rqmc=True) mirrors the WGSL
+        # rqmc_uniform byte-for-byte (coordinate map, Sobol table, shift).
+        simulations = 16
+        cpu = cal.returns_cpu(simulations, self.total_months, self.model, seed=42, config=self.config, rqmc=True)
+        gpu = self.engine.run_returns(simulations, months=self.total_months, rqmc=True)
+        diff = np.abs(cpu.astype(np.float64) - gpu.astype(np.float64))
+        self.assertLess(float(diff.max()), RETURN_TOLERANCE, f"max |cpu-gpu| = {diff.max():.2e}")
+
+    def test_rqmc_nested_prefix(self):
+        # Extensibility: with the same seed the first 8 lives of a 16-life
+        # RQMC run must equal the 8-life run (Sobol + per-coordinate shift
+        # depend only on the global life index, never on N).
+        small = self.engine.run_returns(8, months=self.total_months, rqmc=True)
+        large = self.engine.run_returns(16, months=self.total_months, rqmc=True)
+        self.assertTrue(np.array_equal(small, large[:8]),
+                        "RQMC N-run must be the prefix of the larger run for the same seed")
+
+    def test_rqmc_owen_matches_cpu_reference(self):
+        # The Owen (nested) scramble of the Sobol net (mode 2) must agree
+        # CPU-vs-GPU: calibration.returns_cpu(rqmc=True, owen=True) mirrors
+        # the WGSL rqmc_uniform_owen byte-for-byte.
+        simulations = 16
+        cpu = cal.returns_cpu(simulations, self.total_months, self.model, seed=42,
+                              config=self.config, rqmc=True, owen=True)
+        gpu = self.engine.run_returns(simulations, months=self.total_months, rqmc=True, owen=True)
+        diff = np.abs(cpu.astype(np.float64) - gpu.astype(np.float64))
+        self.assertLess(float(diff.max()), RETURN_TOLERANCE, f"max |cpu-gpu| = {diff.max():.2e}")
+
+    def test_rqmc_direct_w_matches_cpu_reference(self):
+        # The direct-chi2-LUT scale variant (mode 3) must also agree
+        # CPU-vs-GPU: calibration.returns_cpu(rqmc=True, direct_w=True)
+        # mirrors the WGSL LUT interpolation byte-for-byte.
+        simulations = 16
+        cpu = cal.returns_cpu(simulations, self.total_months, self.model, seed=42,
+                              config=self.config, rqmc=True, direct_w=True)
+        gpu = self.engine.run_returns(simulations, months=self.total_months, rqmc=True, direct_w=True)
+        diff = np.abs(cpu.astype(np.float64) - gpu.astype(np.float64))
+        self.assertLess(float(diff.max()), RETURN_TOLERANCE, f"max |cpu-gpu| = {diff.max():.2e}")
+
+    def test_rqmc_owen_nested_prefix(self):
+        # The Owen scramble depends only on (seed, coord, bit), never on N:
+        # the first 8 lives of a 16-life run must equal the 8-life run.
+        small = self.engine.run_returns(8, months=self.total_months, rqmc=True, owen=True)
+        large = self.engine.run_returns(16, months=self.total_months, rqmc=True, owen=True)
+        self.assertTrue(np.array_equal(small, large[:8]),
+                        "Owen N-run must be the prefix of the larger run for the same seed")
+
+    def test_rqmc_owen_differs_from_shift(self):
+        # A different scramble must draw different paths.
+        gpu_shift = self.engine.run_returns(16, months=self.total_months, rqmc=True)
+        gpu_owen = self.engine.run_returns(16, months=self.total_months, rqmc=True, owen=True)
+        self.assertFalse(np.array_equal(gpu_shift, gpu_owen))
+
+    def test_rqmc_differs_from_threefry(self):
+        # The two samplers draw genuinely different paths, so a change in
+        # sampler mode cannot go unnoticed by this suite.
+        gpu_tf = self.engine.run_returns(16, months=self.total_months, rqmc=False)
+        gpu_rq = self.engine.run_returns(16, months=self.total_months, rqmc=True)
+        self.assertFalse(np.array_equal(gpu_tf, gpu_rq))
+
     def test_leveraged_funds_consistent(self):
         simulations = 8
         cpu = cal.returns_cpu(simulations, self.total_months, self.model, seed=42, config=self.config)

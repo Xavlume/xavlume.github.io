@@ -540,6 +540,68 @@ def main() -> int:
               f"xi[0] {xi_on[0]:.5f} -> {xi_cma8[0]:.5f}")
         driver.execute_script("byId('btn-reset-defaults').click();")
 
+        section("RQMC SAMPLER (default) + THREEFRY OPT-OUT")
+        try:
+            # RQMC digital-shift Sobol is the page DEFAULT; this gate proves
+            # the embedded 14-bit Sobol table + dispatch path work properly
+            # in the real browser, and that ?sampler=threefry restores the
+            # legacy stream.
+            driver.get(HTML.as_uri())
+            deadline = time.time() + 60
+            while time.time() < deadline:
+                if driver.execute_script(
+                    "return !!state.deviceContext && !byId('gpu-status').className.includes('bad');"
+                ):
+                    break
+                time.sleep(0.5)
+            else:
+                raise RuntimeError("WebGPU device not ready on ?sampler=rqmc page")
+            run_simulation(driver, args.simulations)
+            rqmc_state = driver.execute_script(
+                "return {completed: byId('completed-meta').textContent,"
+                " n: state.results.length, median: state.results[0].median,"
+                " topCe: displayedRows()[0].ce,"
+                " tableOk: typeof sobolTableAvailable === 'function' && sobolTableAvailable(),"
+                " words: typeof sobolTableWords === 'function' ? sobolTableWords().length : 0};"
+            )
+            check("default run marks the sampler as RQMC Sobol",
+                  "RQMC" in rqmc_state["completed"], f"'{rqmc_state['completed']}'")
+            check("default RQMC run simulates the full pool",
+                  rqmc_state["n"] == 1600, f"got {rqmc_state['n']:,} strategies")
+            check("default RQMC run produces finite values (median + displayed CE)",
+                  isinstance(rqmc_state["median"], (int, float)) and abs(rqmc_state["median"]) < 1e9
+                  and isinstance(rqmc_state["topCe"], (int, float)) and abs(rqmc_state["topCe"]) < 1e9,
+                  f"median {rqmc_state['median']}, CE {rqmc_state['topCe']}")
+            check("embedded 14-bit Sobol table decoded",
+                  rqmc_state["tableOk"] and rqmc_state["words"] == 8910 * 14,
+                  f"words {rqmc_state['words']}")
+            # Legacy opt-out: exact same run, but Threefry, and (critically)
+            # it must produce DIFFERENT numbers than the default RQMC run.
+            driver.get(HTML.as_uri() + "?sampler=threefry")
+            deadline = time.time() + 60
+            while time.time() < deadline:
+                if driver.execute_script(
+                    "return !!state.deviceContext && !byId('gpu-status').className.includes('bad');"
+                ):
+                    break
+                time.sleep(0.5)
+            else:
+                raise RuntimeError("WebGPU device not ready on ?sampler=threefry page")
+            run_simulation(driver, args.simulations)
+            tf_state = driver.execute_script(
+                "return {completed: byId('completed-meta').textContent,"
+                " median: state.results[0].median};"
+            )
+            check("?sampler=threefry opts back into the legacy stream",
+                  "Threefry" in tf_state["completed"] and "RQMC" not in tf_state["completed"],
+                  f"'{tf_state['completed']}'")
+            check("Threefry and RQMC default runs differ at N=1000",
+                  isinstance(tf_state["median"], (int, float))
+                  and abs(tf_state["median"] - rqmc_state["median"]) > 1.0,
+                  f"threefry median {tf_state['median']} vs rqmc {rqmc_state['median']}")
+        except Exception as exc:
+            check("RQMC-default / threefry-optout runs completed cleanly", False, str(exc)[:220])
+
         section("BROWSER CONSOLE")
         logs = driver.get_log("browser")
         severe = [entry for entry in logs if entry["level"] == "SEVERE"]

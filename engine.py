@@ -87,6 +87,9 @@ def make_params(
     seed: int = SEED,
     columns_per_workgroup: int = 1,
     generate_leveraged: bool = True,
+    rqmc: bool = False,
+    owen: bool = False,
+    direct_w: bool = False,
 ) -> bytes:
     """Build the 144-byte params buffer; layout identical to the browser's makeParams."""
     lc = config["lifecycle"]
@@ -131,9 +134,24 @@ def make_params(
         cma.extra_mer_20 / 12.0,
         co.layoff_annual_probability,
     ]
+    # dispatch.y: RQMC mode. 0 = Threefry (deployed default); 1 = digital-shift
+    # Sobol; 2 = Owen (nested) scramble; 3 = shift + direct chi2 LUT scale;
+    # 4 = Owen + direct chi2 LUT scale. The browser sets 1 only under
+    # ?sampler=rqmc (Threefry remains the deployed default).
     # dispatch.z: 1 = generate the leveraged return series (VEQT1.5/VEQT2);
     # the Python engine always runs the full 5,040-strategy space.
-    u32[32:36] = [columns_per_workgroup, 0, 1 if generate_leveraged else 0, 0]
+    # dispatch.w: RQMC direction-bit width in the sobol buffer - the full
+    # 20-bit table here, 14 in the browser's truncated embed; the shader
+    # derives the chi2 LUT offset (modes 3/4) as dims * bits.
+    rqmc_mode = 0
+    if rqmc:
+        rqmc_mode = (4 if direct_w else 2) if owen else (3 if direct_w else 1)
+    u32[32:36] = [
+        columns_per_workgroup,
+        rqmc_mode,
+        1 if generate_leveraged else 0,
+        calibration.SOBOL_BITS if rqmc else 0,
+    ]
     return params.tobytes()
 
 
@@ -151,6 +169,7 @@ class Engine:
         self.price_path = str(price_path or DEFAULT_PRICE_PATH)
         self.batch_size = batch_size
         self.seed = seed
+        self._sobol_buffer = None
 
         import wgpu
         from wgpu.utils import get_default_device
@@ -250,18 +269,37 @@ class Engine:
     def _buffer(self, data: np.ndarray, usage: int):
         return self.device.create_buffer_with_data(data=data, usage=usage)
 
+    def _sobol_dirs_buffer(self):
+        """Lazily upload the Joe-Kuo Sobol direction table (RQMC sampler).
+
+        The table is consumed by the main module's binding 4 only when
+        params.dispatch.y == 1; the browser keeps its binding-4 dummy and
+        never enables RQMC.
+        """
+        if self._sobol_buffer is None:
+            self._sobol_buffer = self._buffer(
+                calibration.sobol_rqmc_buffer(self.config), self.wgpu.BufferUsage.STORAGE
+            )
+        return self._sobol_buffer
+
     # -- public API ---------------------------------------------------------
-    def run_returns(self, simulations: int, months: Optional[int] = None) -> np.ndarray:
+    def run_returns(self, simulations: int, months: Optional[int] = None,
+                    rqmc: bool = False, owen: bool = False,
+                    direct_w: bool = False) -> np.ndarray:
         """Run only the return-generation pass; returns (simulations, months, 5) f32.
 
-        Used by the parity test to compare the WGSL Threefry skew-t sampler
-        against the NumPy CPU reference.
+        Used by the parity test to compare the WGSL skew-t sampler against
+        the NumPy CPU reference (``rqmc=True`` selects the digital-shift
+        scrambled Sobol stream, ``rqmc=True, owen=True`` the Owen-scrambled
+        stream, ``direct_w=True`` the direct-chi2-LUT scale variant, all
+        mirrored by ``calibration.returns_cpu``).
         """
         tables = calibration.build_model_tables(self.config)
         total_months = months or (tables["accum_months"] + tables["retire_months"])
         params = self._buffer(
             np.frombuffer(
-                make_params(self.config, simulations, 1, simulations, 0, seed=self.seed),
+                make_params(self.config, simulations, 1, simulations, 0, seed=self.seed,
+                            rqmc=rqmc, owen=owen, direct_w=direct_w),
                 dtype=np.uint8,
             ),
             self.wgpu.BufferUsage.STORAGE,
@@ -281,7 +319,7 @@ class Engine:
             entries=[
                 {"binding": index, "resource": {"buffer": buffer}}
                 for index, buffer in enumerate(
-                    [params, scratch, dummy_ro, model_buffer, dummy_ro, dummy_ro, dummy_rw]
+                    [params, scratch, dummy_ro, model_buffer, self._sobol_dirs_buffer(), dummy_ro, dummy_rw]
                 )
             ],
         )
@@ -313,12 +351,32 @@ class Engine:
         simulations: int,
         allocation_indices: Optional[List[int]] = None,
         columns_per_workgroup: int = 1,
+        include_bequest: bool = True,
+        rqmc: bool = False,
+        owen: bool = False,
+        direct_w: bool = False,
     ) -> SimulationResult:
         """Run the complete on-chip pipeline for the requested strategies.
 
         columns_per_workgroup mirrors the deployed page's dispatch shaping
         (default 1 = the reference one-column-per-thread shape); results are
         byte-identical for any value.
+
+        include_bequest=False skips the terminal-estate (bequest) pass, whose
+        per-simulation sim_data buffer grows as sims * total_months * funds
+        (~27 KB/sim at default horizons), so very large runs (e.g. 100k sims =
+        ~2.7 GB, over the adapter's max storage buffer size) can still reduce
+        the spending quantiles. ``result.estate`` is then None.
+
+        rqmc=True switches the uniform source to the digital-shift scrambled
+        Sobol stream (params.dispatch.y = 1); rqmc=True, owen=True selects
+        the Owen-nested scramble instead (dispatch.y = 2); direct_w=True
+        additionally draws the chi2 scale from a single LUT-inverted uniform
+        (dispatch.y = 3/4), stratifying the volatility regime per net
+        coordinate. The deployed page always uses the default Threefry. All
+        RQMC estimators converge to the same CEQ as Threefry with lower
+        sampling error at a given simulation count, and N-runs stay exact
+        prefixes of larger runs with the same seed.
         """
         if simulations < 1:
             raise ValueError("simulations must be positive")
@@ -353,6 +411,7 @@ class Engine:
             usage=wgpu.BufferUsage.MAP_READ | wgpu.BufferUsage.COPY_DST,
         )
         dummy_ro = self.device.create_buffer(size=4, usage=storage_usage)
+        sobol_dir_buffer = self._sobol_dirs_buffer()
 
         # Packed scratch buffer sized for the worst-case (full) batch.
         scratch = self.device.create_buffer(
@@ -389,21 +448,26 @@ class Engine:
             + house_count * path_count * simulations * 4
             + house_count * simulations * 2
         )
-        sim_data_buffer = self.device.create_buffer(
-            size=sim_data_words * 4,
-            usage=storage_usage | wgpu.BufferUsage.COPY_DST,
-        )
-        estate_buffer = self.device.create_buffer(
-            size=n_allocations * estate_grid * 201 * 4,
-            usage=storage_usage | wgpu.BufferUsage.COPY_SRC,
-        )
-        estate_hist_buffer = self._buffer(
-            np.zeros(estate_hist_words, dtype=np.uint32), storage_usage
-        )
-        estate_readback = self.device.create_buffer(
-            size=n_allocations * estate_grid * 201 * 4,
-            usage=wgpu.BufferUsage.MAP_READ | wgpu.BufferUsage.COPY_DST,
-        )
+        estate_buffer = None
+        estate_hist_buffer = None
+        estate_readback = None
+        sim_data_buffer = None
+        if include_bequest:
+            sim_data_buffer = self.device.create_buffer(
+                size=sim_data_words * 4,
+                usage=storage_usage | wgpu.BufferUsage.COPY_DST,
+            )
+            estate_buffer = self.device.create_buffer(
+                size=n_allocations * estate_grid * 201 * 4,
+                usage=storage_usage | wgpu.BufferUsage.COPY_SRC,
+            )
+            estate_hist_buffer = self._buffer(
+                np.zeros(estate_hist_words, dtype=np.uint32), storage_usage
+            )
+            estate_readback = self.device.create_buffer(
+                size=n_allocations * estate_grid * 201 * 4,
+                usage=wgpu.BufferUsage.MAP_READ | wgpu.BufferUsage.COPY_DST,
+            )
         # Per-batch readbacks of house outcomes and per-path UI scores. The
         # copies happen INSIDE the batch loop below: scratch is overwritten by
         # every subsequent batch, so it must never be re-read after the loop.
@@ -421,7 +485,8 @@ class Engine:
             count = min(self.batch_size, simulations - offset)
             params = self._buffer(
                 np.frombuffer(
-                    make_params(self.config, simulations, n_allocations, count, offset, seed=self.seed, columns_per_workgroup=columns_per_workgroup),
+                    make_params(self.config, simulations, n_allocations, count, offset, seed=self.seed,
+                            columns_per_workgroup=columns_per_workgroup, rqmc=rqmc, owen=owen, direct_w=direct_w),
                     dtype=np.uint8,
                 ),
                 storage_usage,
@@ -431,25 +496,27 @@ class Engine:
                 entries=[
                     {"binding": index, "resource": {"buffer": buffer}}
                     for index, buffer in enumerate(
-                        [params, scratch, allocation_buffer, model_buffer, dummy_ro, dummy_ro, spending_buffer]
+                        [params, scratch, allocation_buffer, model_buffer, sobol_dir_buffer, dummy_ro, spending_buffer]
                     )
                 ],
             )
-            bequest_bind_group = self.device.create_bind_group(
-                layout=self.bequest_layout,
-                entries=[
-                    {"binding": index, "resource": {"buffer": buffer}}
-                    for index, buffer in enumerate(
-                        [
-                            params, spending_buffer, sim_data_buffer,
-                            allocation_buffer, model_buffer, estate_buffer, estate_hist_buffer,
-                        ]
-                    )
-                ],
-            )
+            bequest_bind_group = None
+            if include_bequest:
+                bequest_bind_group = self.device.create_bind_group(
+                    layout=self.bequest_layout,
+                    entries=[
+                        {"binding": index, "resource": {"buffer": buffer}}
+                        for index, buffer in enumerate(
+                            [
+                                params, spending_buffer, sim_data_buffer,
+                                allocation_buffer, model_buffer, estate_buffer, estate_hist_buffer,
+                            ]
+                        )
+                    ],
+                )
             encoder = self.device.create_command_encoder()
             # Zero the persistent bequest histograms before the first batch.
-            if offset == 0:
+            if include_bequest and offset == 0:
                 pass_ = encoder.begin_compute_pass()
                 pass_.set_pipeline(self.bequest_pipelines["bequest_reset"])
                 pass_.set_bind_group(0, bequest_bind_group)
@@ -476,30 +543,32 @@ class Engine:
             states_offset = count * total_months * len(cfg.FUNDS) + count * career_years
             houses_offset = states_offset + house_count * path_count * count * 4
             global_states_offset = simulations * total_months * len(cfg.FUNDS)
-            encoder.copy_buffer_to_buffer(
-                scratch, 0, sim_data_buffer, offset * total_months * len(cfg.FUNDS) * 4, returns_bytes
-            )
-            for block in range(house_count * path_count):
+            if include_bequest:
                 encoder.copy_buffer_to_buffer(
-                    scratch, (states_offset + block * count * 4) * 4,
-                    sim_data_buffer, (global_states_offset + block * simulations * 4 + offset * 4) * 4,
-                    count * 16,
+                    scratch, 0, sim_data_buffer, offset * total_months * len(cfg.FUNDS) * 4, returns_bytes
                 )
-            for h in range(house_count):
-                encoder.copy_buffer_to_buffer(
-                    scratch, (houses_offset + h * count * 2) * 4,
-                    sim_data_buffer,
-                    (global_states_offset + house_count * path_count * simulations * 4 + h * simulations * 2 + offset * 2) * 4,
-                    count * 8,
-                )
+                for block in range(house_count * path_count):
+                    encoder.copy_buffer_to_buffer(
+                        scratch, (states_offset + block * count * 4) * 4,
+                        sim_data_buffer, (global_states_offset + block * simulations * 4 + offset * 4) * 4,
+                        count * 16,
+                    )
+                for h in range(house_count):
+                    encoder.copy_buffer_to_buffer(
+                        scratch, (houses_offset + h * count * 2) * 4,
+                        sim_data_buffer,
+                        (global_states_offset + house_count * path_count * simulations * 4 + h * simulations * 2 + offset * 2) * 4,
+                        count * 8,
+                    )
             # Bequest walk for THIS batch only (w = f * w*, estates folded
             # into the persistent histogram) - bounded per-dispatch cost like
             # the solver, so the Windows TDR watchdog is never hit.
-            pass_ = encoder.begin_compute_pass()
-            pass_.set_pipeline(self.bequest_pipelines["bequest_walk"])
-            pass_.set_bind_group(0, bequest_bind_group)
-            pass_.dispatch_workgroups(n_allocations * max(estate_grid, 1), 1, 1)
-            pass_.end()
+            if include_bequest:
+                pass_ = encoder.begin_compute_pass()
+                pass_.set_pipeline(self.bequest_pipelines["bequest_walk"])
+                pass_.set_bind_group(0, bequest_bind_group)
+                pass_.dispatch_workgroups(n_allocations * max(estate_grid, 1), 1, 1)
+                pass_.end()
             # Persist this batch's house outcomes and drawdown scores for the
             # CPU readback below (scratch is overwritten by the next batch).
             encoder.copy_buffer_to_buffer(
@@ -542,10 +611,14 @@ class Engine:
         # so a post-loop re-read would see only the LAST batch's data).
         ui_means = ui_scores.mean(axis=0)
         quantiles = self._quantiles_on_gpu(spending, simulations, n_allocations)
-        estate = self._estate_final_on_gpu(
-            spending_buffer, sim_data_buffer,
-            allocation_buffer, model_buffer, estate_buffer, estate_hist_buffer,
-            estate_readback, simulations, n_allocations, estate_grid,
+        estate = (
+            self._estate_final_on_gpu(
+                spending_buffer, sim_data_buffer,
+                allocation_buffer, model_buffer, estate_buffer, estate_hist_buffer,
+                estate_readback, simulations, n_allocations, estate_grid,
+            )
+            if include_bequest
+            else None
         )
         elapsed = time.perf_counter() - started
         return SimulationResult(

@@ -26,8 +26,19 @@ struct Params {
     generate: vec4<u32>,     // PRNG seed, skew-t df, batch simulation count, batch offset
     generate1: vec4<f32>,    // real borrowing rate/12, extra MER 1.5/12, extra MER 2.0/12, layoff probability
     dispatch: vec4<u32>,     // allocation columns per workgroup (compat slicing); 1 = one column per thread;
+                             // .y = RQMC sampler mode: 0 = Threefry (browser default);
+                             // 1 = digital-shift Sobol, 2 = Owen scramble,
+                             // 3 = shift + direct chi2 LUT scale, 4 = Owen + direct chi2 LUT scale
+                             // (Python engine rqmc runs only; the browser sets .y = 1 when the page
+                             // is loaded with ?sampler=rqmc; the default is always Threefry, .y = 0),
                              // .z = 1 when the leveraged return series (VEQT1.5/VEQT2) are generated,
-                             // 0 = skipped (browser leverage-off runs; the Python engine always sets 1)
+                             // 0 = skipped (browser leverage-off runs; the Python engine always sets 1),
+                             // .w = RQMC direction-bit width stored in sobol_dirs: 20 for the Python
+                             //      engine's full table, 14 for the browser's truncated embed (each
+                             //      stored word holds the TOP `bits` bits and is load-shifted back
+                             //      with << (32 - bits), which reconstructs the exact direction
+                             //      number for k <= bits).  The chi2 LUT (modes 3/4) lives at
+                             //      word offset dims * bits = (10*totalMonths + careerYears) * bits.
 };
 
 @group(0) @binding(0) var<storage, read> params: Params;
@@ -67,9 +78,12 @@ struct Params {
 // constants). See calibration.build_model_buffer.
 @group(0) @binding(3) var<storage, read> model_values: array<f32>;
 
-// Bindings 4-5 are unused read-only placeholders kept to satisfy the fixed
-// 7-entry layout the Python and JS runtimes share.
-@group(0) @binding(4) var<storage, read> unused_a: array<f32>;
+// Bindings 4-5: binding 4 is the Joe-Kuo Sobol direction-number table with
+// the chi2 quantile LUT appended (read only by the RQMC sampler variants,
+// params.dispatch.y != 0, Python engine rqmc runs; the browser keeps this
+// slot bound to a dummy and never enables RQMC).
+// Binding 5 is an unused read-only placeholder keeping the 7-entry layout.
+@group(0) @binding(4) var<storage, read> sobol_dirs: array<u32>;
 @group(0) @binding(5) var<storage, read> unused_b: array<f32>;
 
 // Binding 6 - max sustainable annual spending per (allocation, simulation),
@@ -324,6 +338,104 @@ fn threefry_uniforms(index: u32, pair: u32, key0: u32) -> vec2<f32> {
 fn threefry_uniform(index: u32, key0: u32, key1: u32) -> f32 {
     let out = threefry_u32(index, 0u, key0, key1);
     return (f32(out.x >> 8u) + 0.5) / 16777216.0;
+}
+
+// ---------------------------------------------------------------------------
+// RQMC: Sobol uniforms with per-seed randomization.
+// sobol_u32 XORs the Joe-Kuo direction numbers for the set bits of the
+// (global) simulation index; randomization is per (seed, coord) - mode 1
+// applies a rigid digital shift, modes 2/4 an Owen (nested) scramble - and
+// never depends on N, so an N-run remains an exact prefix of a larger run
+// with the same seed.  Mirrored byte-for-byte by calibration.rqmc_uniforms /
+// rqmc_uniforms_owen; the coordinate map is documented there.  Modes 3/4
+// additionally draw the chi2 scale directly from one uniform via the
+// appended LUT (see chi2_inv_cdf below and calibration.chi2_lut).
+//
+// The direction-bit width is RUNTIME (params.dispatch.w): 20 for the Python
+// engine's full table, 14 for the browser's truncated embed.  Each stored
+// word holds the TOP `bits` bits of the direction number; the load-shift
+// << (32 - bits) reconstructs the exact full 32-bit word for k <= bits
+// (direction numbers occupy bits 31..(32-k), all inside the top-bits window
+// when k <= bits), so both table forms produce the IDENTICAL net digits.
+// ---------------------------------------------------------------------------
+fn rqmc_direction_bits() -> u32 {
+    return params.dispatch.w;
+}
+
+fn sobol_u32(index: u32, coord: u32) -> u32 {
+    let bits = rqmc_direction_bits();
+    var x = 0u;
+    for (var k = 0u; k < bits; k += 1u) {
+        if ((index >> k) & 1u) != 0u {
+            x ^= sobol_dirs[coord * bits + k] << (32u - bits);
+        }
+    }
+    return x;
+}
+
+fn rqmc_uniform(index: u32, coord: u32, seed: u32) -> f32 {
+    let shift = threefry_u32(coord, 0u, seed, 0x9E3779B9u).x;
+    let y = sobol_u32(index, coord) ^ shift;
+    return (f32(y >> 8u) + 0.5) / 16777216.0;
+}
+
+// ---------------------------------------------------------------------------
+// Owen (nested) scramble of the Sobol point, the RQMC variant selected by
+// params.dispatch.y == 2 (Python engine rqmc+owen runs only).  Output bit k
+// is the input bit XORed with a hash bit that depends on the already-
+// scrambled LOWER output bits and on (coord, seed, k), so the map is an
+// invertible nested permutation that preserves the (t,s)-net property but
+// re-randomizes the point set per seed at every bit level.  This removes
+// the main weakness of the rigid digital shift: at N = 2^m the shift only
+// translates the whole set by one vector whose active part is the low m
+// bits, so per-seed point sets at small N stay strongly correlated; the
+// Owen scramble instead mixes the point set through per-bit randomness and
+// restores a much smaller between-seed variance for the net estimator.
+// Mirrored byte-for-byte by calibration.rqmc_uniforms_owen; the coordinate
+// map is identical to the shift variant.
+// ---------------------------------------------------------------------------
+fn rqmc_uniform_owen(index: u32, coord: u32, seed: u32) -> f32 {
+    let x = sobol_u32(index, coord);
+    // The direction table stores the net resolution in the TOP bits of each
+    // 32-bit word (the first coordinate's direction numbers are 2^31, 2^30,
+    // ...), so net digit k lives at bit position 31 - k of x.
+    var y = 0u;
+    for (var k = 0u; k < rqmc_direction_bits(); k += 1u) {
+        let b = 31u - k;
+        let hash = threefry_u32(y ^ (coord * 0x9E3779B9u), u32(k), seed, 0xD1B54A32u).x;
+        let bit = ((x >> b) ^ (hash >> k)) & 1u;
+        y |= bit << b;
+    }
+    let shift = threefry_u32(coord, 0u, seed, 0x9E3779B9u).x;
+    let z = y ^ shift;
+    return (f32(z >> 8u) + 0.5) / 16777216.0;
+}
+
+fn rqmc_draw(index: u32, coord: u32, seed: u32, mode: u32) -> f32 {
+    if (mode == 2u || mode == 4u) {
+        return rqmc_uniform_owen(index, coord, seed);
+    }
+    // modes 1 and 3 (and any other value): digital-shift scramble.
+    return rqmc_uniform(index, coord, seed);
+}
+
+// ---------------------------------------------------------------------------
+// Direct chi-square scale via the appended quantile LUT (modes 3/4).
+// The LUT stores W_i = chi2(nu).ppf(u_i) as f32 bits in
+// sobol_dirs[offset .. offset + CHI2_LUT_PTS), with u_i on a LOG-uniform
+// grid from 1e-7 to 1-1e-7 (the chi2 lower tail is too steep for a uniform
+// grid - see calibration.chi2_lut).  The map u -> i uses the same formula
+// as calibration.chi2_lut_index.
+// ---------------------------------------------------------------------------
+const CHI2_LUT_PTS = 65536u;
+
+fn chi2_inv_cdf(u: f32, offset: u32) -> f32 {
+    let x = log(u / 1e-7) / log((1.0 - 1e-7) / 1e-7) * f32(CHI2_LUT_PTS);
+    var i = u32(clamp(x, 0.0, f32(CHI2_LUT_PTS) - 1.0));
+    let frac = clamp(x - f32(i), 0.0, 1.0);
+    let lo = bitcast<f32>(sobol_dirs[offset + i]);
+    let hi = bitcast<f32>(sobol_dirs[offset + min(i + 1u, CHI2_LUT_PTS - 1u)]);
+    return lo + frac * (hi - lo);
 }
 
 fn box_muller(u1: f32, u2: f32) -> vec2<f32> {
