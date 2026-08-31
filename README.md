@@ -140,6 +140,29 @@ The two leveraged funds are deterministic transforms of VEQT:
 `r₁.₅ = max(−0.95, 1.5·r − 0.5·r_borrow − fee₁.₅)`,
 `r₂.₀ = max(−0.95, 2.0·r − r_borrow − fee₂.₀)`, all clipped at −95%.
 
+#### Two-state Markov switching (this clone)
+
+This checkout (`new/`) replaces the single skew-t draw with a **two-state
+Markov switching** version of the same heavy-tailed model. A univariate
+two-state Gaussian HMM is fit by maximum likelihood (Hamilton filter) to the
+VEQT monthly returns, giving a low-vol "bull" state and a high-vol "bear"
+state plus the 2×2 persistence matrix `[[p00, 1−p00], [1−p11, p11]]`. VGRO and
+VBAL follow VEQT through their pooled Beta on VEQT (state-invariant residual
+vol), so a regime switch tilts every fund at once. Each state carries its own
+skew-t parameter set (xi, omega, Cholesky; skewness δ shared), and the two
+state means are shifted by a common constant so the regime-weighted
+(expected) return equals the same forward-looking CMA target as the base
+model — the change alters risk structure and regime persistence, not drift.
+
+On a given simulated path the active state follows the Markov chain
+(month 0 drawn from the stationary prior, later months persisting with
+probability p00/p11) and each month is sampled from that state's skew-t. The
+sampler mirrors the base in three places (NumPy reference, WGSL, browser
+JS); the parity suite proves CPU↔GPU agreement to float32 precision for every
+sampler variant (Threefry, Sobol shift, Owen, direct-χ²). The model buffer
+carries two 18-word skew-t sets plus the two transition probabilities
+(38 words in place of 18), so the bequest/estate offsets shift accordingly.
+
 ### Spending smile & intertemporal utility
 
 Retirement spending follows a life-stage "smile" schedule (flat → declining

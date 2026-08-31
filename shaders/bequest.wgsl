@@ -125,7 +125,7 @@ fn house_outcomes_at(house: u32, simulation: u32) -> vec2<f32> {
 }
 
 fn house_const_at(index: u32) -> f32 {
-    let offset = career_years() * 6u + params.solver.x * 8u + 54u + 18u;
+    let offset = career_years() * 6u + params.solver.x * 8u + 54u + 38u;
     return model_values[offset + index];
 }
 
@@ -226,7 +226,7 @@ fn interp_tax(target_net: f32, gross_offset: u32, net_offset: u32, count: u32) -
 
 // Estate-grid tail: [grid count, f0, f1, ...] after the 11 house constants.
 fn estate_grid_offset() -> u32 {
-    return career_years() * 6u + params.solver.x * 8u + 54u + 18u + 11u;
+    return career_years() * 6u + params.solver.x * 8u + 54u + 38u + 11u;
 }
 
 fn estate_grid_count() -> u32 {

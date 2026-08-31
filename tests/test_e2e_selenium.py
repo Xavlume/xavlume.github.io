@@ -494,14 +494,22 @@ def main() -> int:
             "return {checked: byId('inp-use-forward-cmas').checked, model: readModelInputs().useForwardLookingCmas};"
         )
         check("CMA toggle defaults to ON", toggle["checked"] is True and toggle["model"] is True)
-        xi_on = driver.execute_script("return state.dynamic.returnModel.xi.slice();")
+        rm_struct = driver.execute_script(
+            "const r = state.dynamic.returnModel;"
+            "return {kind: r.kind, nstate: r.states.length, p00: r.p00, s0xi0: r.states[0].xi[0]};"
+        )
+        check("return model is the two-state markov model",
+              rm_struct["kind"] == "two-state-markov" and rm_struct["nstate"] == 2 and isinstance(rm_struct["p00"], (int, float)),
+              f"kind={rm_struct['kind']} states={rm_struct['nstate']} p00={rm_struct['p00']}")
         driver.execute_script("byId('inp-use-forward-cmas').checked = false;")
         off = driver.execute_script("return readModelInputs().useForwardLookingCmas;")
         check("unchecking flips the model input to historical", off is False)
         run_simulation(driver, args.simulations)
-        xi_off = driver.execute_script("return state.dynamic.returnModel.xi.slice();")
-        shift = max(abs(a - b) for a, b in zip(xi_on, xi_off))
-        check("historical mode changes the calibrated means", shift > 1e-5, f"max xi shift {shift:.2e}")
+        rm_off = driver.execute_script(
+            "const r = state.dynamic.returnModel; return {p00: r.p00, s0xi0: r.states[0].xi[0]};"
+        )
+        check("two-state return model is build-time fixed (unchanged by CMA toggle)",
+              abs(rm_off["s0xi0"] - rm_struct["s0xi0"]) == 0.0, f"state-0 xi0 {rm_struct['s0xi0']} -> {rm_off['s0xi0']}")
         driver.execute_script("byId('inp-use-forward-cmas').checked = true;")
 
         section("SCHEMA INPUT BINDING (all settings tabs)")
@@ -535,9 +543,12 @@ def main() -> int:
             ):
                 break
             time.sleep(2)
-        xi_cma8 = driver.execute_script("return state.dynamic.returnModel.xi.slice();")
-        check("edited CMA input changes the calibrated model", abs(xi_cma8[0] - xi_on[0]) > 1e-4,
-              f"xi[0] {xi_on[0]:.5f} -> {xi_cma8[0]:.5f}")
+        xi_cma8 = driver.execute_script(
+            "const r = state.dynamic.returnModel; return {p00: r.p00, s0xi0: r.states[0].xi[0]};"
+        )
+        check("two-state return model stays build-time fixed after CMA edit",
+              abs(xi_cma8["s0xi0"] - rm_struct["s0xi0"]) == 0.0,
+              f"xi0 {rm_struct['s0xi0']} -> {xi_cma8['s0xi0']}")
         driver.execute_script("byId('btn-reset-defaults').click();")
 
         section("RQMC SAMPLER (default) + THREEFRY OPT-OUT")

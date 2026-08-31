@@ -48,7 +48,7 @@ class TestReturnParity(unittest.TestCase):
     def setUp(self):
         self.config = cfg.instance_config()
         self.returns_df = cal.load_returns(PRICE_PATH)
-        self.model = cal.calibrate_skew_t(
+        self.model = cal.calibrate_two_state_markov(
             self.returns_df[list(cfg.BASE_UNDERLYING)].values.astype(np.float64),
             self.config["calibration"],
             self.config["cma"],

@@ -146,9 +146,10 @@ fn career_scalar(year: u32, index: u32) -> f32 {
     return model_values[year * 6u + index];
 }
 
-// Eleven house constants appended after the 54-value tax tail and the 18
-// calibrated skew-t constants (index 10 = the target property value, read
-// only by the bequest estate pass), followed by the bequest estate-grid tail
+// Eleven house constants appended after the 54-value tax tail, the 36-word
+// two-state skew-t block (two 18-value sets), and the 2 transition
+// probabilities -- index 10 = the target property value, read only by the
+// bequest estate pass), followed by the bequest estate-grid tail
 // [grid count, spending fractions...] consumed only by bequest.wgsl:
 //   0 target house capital (down payment + closing costs)
 //   1 mortgage principal
@@ -162,7 +163,7 @@ fn career_scalar(year: u32, index: u32) -> f32 {
 //   9 house strategy count
 //  10 target property value (bequest home equity)
 fn house_const_at(index: u32) -> f32 {
-    let offset = career_years() * 6u + params.solver.x * 8u + 54u + 18u;
+    let offset = career_years() * 6u + params.solver.x * 8u + 54u + 38u;
     return model_values[offset + index];
 }
 
@@ -213,11 +214,25 @@ fn tax_at(index: u32) -> f32 {
     return model_values[offset + index];
 }
 
-// 18 calibrated skew-t constants appended after the 54-value tax tail:
-// xi[3], omega[3], delta[3], row-major 3x3 Cholesky [9].
-fn return_model_at(index: u32) -> f32 {
-    let offset = career_years() * 6u + params.solver.x * 8u + 54u;
+// 36 calibrated two-state skew-t constants appended after the 54-value tax
+// tail: two 18-value sets [xi[3], omega[3], delta[3], row-major 3x3 Cholesky
+// [9]] for state 0 (low-vol/bull) and state 1 (high-vol/bear), then at
+// indices 36/37 the transition probabilities p00/p11. The initial-state
+// prior p(0) is derived in-shader as (1 - p11) / (2 - p00 - p11).
+fn return_markov_at(state: u32, index: u32) -> f32 {
+    let offset = career_years() * 6u + params.solver.x * 8u + 54u + state * 18u;
     return model_values[offset + index];
+}
+
+fn markov_prob(index: u32) -> f32 {
+    let offset = career_years() * 6u + params.solver.x * 8u + 54u + 36u;
+    return model_values[offset + index];
+}
+
+fn markov_prior0() -> f32 {
+    let p00 = markov_prob(0u);
+    let p11 = markov_prob(1u);
+    return (1.0 - p11) / (2.0 - p00 - p11);
 }
 
 fn monthly_tax(gross: f32) -> f32 {

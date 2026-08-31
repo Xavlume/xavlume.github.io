@@ -31,7 +31,7 @@ the test suites** — they are the safety net.
 | Path | Role | Agents may edit? |
 |---|---|---|
 | `config.py` | **Single source of truth**: typed dataclasses for every fiscal rule, CMA, career/housing/tax number + human formatting helpers | ✅ yes — source |
-| `calibration.py` | Skew-t calibration, packed model buffer, derived lifecycle tables, allocation metadata, JSON payload, **NumPy CPU reference sampler** | ✅ yes — source |
+| `calibration.py` | **Two-state Markov switching** skew-t calibration, packed model buffer, derived lifecycle tables, allocation metadata, JSON payload, **NumPy CPU reference sampler** | ✅ yes — source |
 | `engine.py` | Python `wgpu` harness running the *same* WGSL passes (numerical reference for the deployed page) | ✅ yes — source |
 | `build_html.py` | Template + shaders + runtime JS → `index.html`. **Contains the entire browser runtime (`RUNTIME_JS`)** | ✅ yes — source |
 | `shaders/*.wgsl` | The five GPU compute passes + quantile reduction | ✅ yes — source |
@@ -200,6 +200,11 @@ them breaks parity tests or the E2E suite.**
    - WGSL: `shaders/*.wgsl` (`monthly_tax`, `net_monthly`, `interp_tax`,
      `test_solvency`, `drawdown_ui`, …)
    A formula change in one place **must** be mirrored in the other two.
+   The return model is one concrete instance of this: the two-state Markov
+   sampler is synchronized in `calibration._returns_markov_cpu` (NumPy),
+   `returns.wgsl` (WGSL) and the JS return-model sampler in `RUNTIME_JS`, and
+   `test_parity.py` proves CPU↔GPU agreement to float32 for every sampler
+   variant (Threefry, Sobol shift, Owen, direct-χ²).
    Enforcement: `test_parity.py` (Python vs GPU) and `test_e2e_selenium.py`
    (formula gates: `CE == CE_base × exp(−λ·UI)`, CMA toggle, schema binding).
 
@@ -256,7 +261,7 @@ Passes and dispatch:
 
 | Pass | Entry point | Work | Dispatch |
 |---|---|---|---|
-| 1 | `generate_returns` | Threefry skew-t monthly returns for 5 funds | `⌈sims×months/64⌉` |
+| 1 | `generate_returns` | Two-state Markov switching skew-t monthly returns (one thread per sim walks its full month series, drawing the active regime from the 2×2 chain) | `⌈sims/64⌉` |
 | 2 | `generate_layoffs` | annual layoff flags (0.5× salary) | `⌈sims×careerYears/64⌉` |
 | 3 | `accumulate` | 35 retirement states (5 houses × 7 paths) | `⌈sims/64⌉ × (7×5)` |
 | 4 | `solve` | 24-step bisection → sustainable spending w* | `⌈sims/64⌉ × allocations` |
@@ -342,7 +347,11 @@ f32 words in this order (layout documented in both `common.wgsl` and
 [*, +retireMonths×4)   month1: (RRIF factor, OAS max, 0, 0)
 [*, +54)               tax tail: gross/net interpolation grids; [44..47] monthly
                        thresholds; slot 48 is an UNUSED PAD; [49..53] tax rates
-[*, +18)               skew-t constants: xi[3], omega[3], delta[3], Cholesky[9]
+[*, +38)               two-state skew-t constants: two 18-word sets
+                       (xi[3], omega[3], delta[3], Cholesky[9]) for the
+                       low-vol/bull (state 0) and high-vol/bear (state 1)
+                       regimes, then indices [36,37] the transition
+                       probabilities p00/p11 (prior derived in-shader)
 [*, +11)               house constants (target capital, mortgage principal/rate,
                        taxes, rent, FHSA, HBP, house count, target property
                        value at index 10 — read only by the bequest pass)
@@ -351,8 +360,8 @@ f32 words in this order (layout documented in both `common.wgsl` and
 ```
 
 Mirrors: `buildDynamicModel` in `RUNTIME_JS` and the offset math in
-`common.wgsl` (`career_years()*6 + retire*8 + 54 + 18`). **Do not change the
-layout in only one of the three.**
+`common.wgsl` (`career_years()*6 + retire*8 + 54 + 38`; the bequest offsets
+shift by 38 too). **Do not change the layout in only one of the three.**
 
 ### 6.5 Allocation metadata & strategy space
 
@@ -372,9 +381,19 @@ layout in only one of the three.**
 
 ### 6.6 Key math (see README for the full write-up)
 
-- **Skew-t returns**: `ST(ξ, ω, δ, Σ, ν)`, ν = 5 fixed; `b_ν` evaluated exactly
-  for integer ν; sampled on-chip from Threefry uniforms (|N(0,1)| skew +
-  χ²ν/ν scale + 3 normals + Cholesky rotation), clipped at −95%.
+- **Skew-t returns**: each regime is `ST(ξ, ω, δ, Σ, ν)`, ν = 5 fixed; `b_ν`
+  evaluated exactly for integer ν; sampled on-chip from Threefry uniforms
+  (|N(0,1)| skew + χ²ν/ν scale + 3 normals + Cholesky rotation), clipped at
+  −95%. A **two-state Markov switch** (fit by ML Hamilton filter on VEQT
+  monthly returns) picks the active regime each month — month 0 from the
+  stationary prior `(1−p11)/(2−p00−p11)`, later months persisting in state
+  `s` with probability `p00`/`p11` — and the return is drawn from that state's
+  own skew-t set. State 0 = low-vol/bull, state 1 = high-vol/bear; VGRO/VBAL
+  follow VEQT through a pooled Beta (state-invariant residual vol), and the
+  two state means are shifted so the regime-weighted mean matches the base
+  CMA target (risk-structure change only, not drift). The sampler is
+  synchronized across the NumPy CPU reference (`_returns_markov_cpu`), the
+  WGSL pass (`returns.wgsl`) and the browser JS.
 - **Leverage**: `r1.5 = max(−0.95, 1.5·r − 0.5·r_borrow − fee1.5)`,
   `r2.0 = max(−0.95, 2.0·r − r_borrow − fee2.0)`.
 - **CE**: `CE(γ) = [ (1/199) Σ_i q_i^(1−γ) ]^(1/(1−γ)) · κ(smile, γ)` with

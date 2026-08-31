@@ -99,6 +99,60 @@ class TestSkewTCalibration(unittest.TestCase):
         self.assertTrue(np.allclose(implied, historical, atol=5e-3))
 
 
+class TestTwoStateMarkov(unittest.TestCase):
+    """The two-state Markov switching skew-t model used by the engine."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.config = cfg.instance_config()
+        cls.returns_df = cal.load_returns(PRICE_PATH)
+        cls.returns = cls.returns_df[list(cfg.BASE_UNDERLYING)].values.astype(np.float64)
+        cls.model = cal.calibrate_two_state_markov(cls.returns, cls.config["calibration"], cls.config["cma"])
+
+    def test_structure(self):
+        self.assertEqual(self.model["xi_two"].shape, (2, 3))
+        self.assertEqual(self.model["omega_two"].shape, (2, 3))
+        self.assertEqual(self.model["cholesky_two"].shape, (2, 3, 3))
+        self.assertEqual(self.model["nu"], 5)
+        self.assertTrue(np.isfinite(self.model["xi_two"]).all())
+        self.assertTrue(np.isfinite(self.model["cholesky_two"]).all())
+
+    def test_transitions_valid(self):
+        # Both persistence probabilities are in (0,1) and the states mix.
+        p00, p11 = self.model["p00"], self.model["p11"]
+        self.assertTrue(0.0 < p00 < 1.0 and 0.0 < p11 < 1.0)
+        self.assertGreater(p00, 0.5)
+        self.assertGreater(p11, 0.5)
+        prior0 = self.model["prior0"]
+        self.assertAlmostEqual(prior0, (1.0 - p11) / (2.0 - p00 - p11), places=12)
+
+    def test_states_ordered_low_to_high_vol(self):
+        vol = self.model["state_sigma"]
+        self.assertTrue(np.all(vol[0] < vol[1]))
+
+    def test_stationary_mean_centered_on_target(self):
+        # The regime-weighted mean must equal the forward-looking CMA target,
+        # so the markov model changes the risk/structure, not the drift.
+        prior0 = self.model["prior0"]
+        stat_mean = prior0 * self.model["state_mu"][0] + (1.0 - prior0) * self.model["state_mu"][1]
+        self.assertTrue(np.allclose(stat_mean, self.model["target_mean"], atol=1e-8))
+
+    def test_bear_state_has_negative_drift(self):
+        # State 1 is high-vol and, on these data, carries negative drift.
+        self.assertLess(float(self.model["state_mu"][1][0]), 0.0)
+        self.assertGreater(float(self.model["state_mu"][0][0]), 0.0)
+
+    def test_cholesky_reproduces_residual(self):
+        for s in range(2):
+            residual = self.model["cholesky_two"][s] @ self.model["cholesky_two"][s].T
+            # residual + delta delta^T is the state's calibrated correlation:
+            # symmetric, positive-definite, unit diagonal.
+            corr = residual + np.outer(self.model["delta"], self.model["delta"])
+            self.assertTrue(np.isfinite(corr).all())
+            self.assertTrue(np.allclose(np.diag(corr), 1.0, atol=1e-6), f"state {s} unit diagonal")
+            self.assertGreaterEqual(np.linalg.eigvalsh(corr).min(), -1e-6, f"state {s} PSD")
+
+
 class TestDerivedTables(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -143,7 +197,7 @@ class TestDerivedTables(unittest.TestCase):
         lc = self.config["lifecycle"]
         career = self.tables["career_years"] * 6
         retire = self.tables["retire_months"]
-        expected = career + 8 * retire + 54 + 18 + 11 + 1 + len(
+        expected = career + 8 * retire + 54 + 38 + 11 + 1 + len(
             self.config["bequest"].estate_grid_fractions
         )
         self.assertEqual(buf.size, expected)
@@ -153,7 +207,7 @@ class TestDerivedTables(unittest.TestCase):
         buf = cal.build_model_buffer(self.config, PRICE_PATH)
         beq = self.config["bequest"]
         retire = self.tables["retire_months"]
-        house_base = self.tables["career_years"] * 6 + 8 * retire + 54 + 18
+        house_base = self.tables["career_years"] * 6 + 8 * retire + 54 + 38
         # House constant index 10 = the target property value (bequest home equity).
         self.assertEqual(float(buf[house_base + 10]), self.config["housing"].property_value)
         # Estate-grid tail: [grid count, fractions...].

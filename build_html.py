@@ -587,13 +587,30 @@ function buildDynamicModel(config) {
     cpmWeights[month] = Math.pow(1 + config.discountRateAnnual / 12, -month) * survival; weightSum += cpmWeights[month];
   }
   for (let month = 0; month < constants.retireMonths; month++) cpmWeights[month] /= weightSum;
-  const returnModel = calibrateReturnModel(config);
-  // Append the 18 calibrated skew-t constants (xi, omega, delta, row-major
-  // Cholesky) after the tax tail, then the 11 house constants (index 10 =
-  // target property value, read only by the bequest estate pass) and the
-  // bequest estate-grid tail [grid count, fractions...] (mirror of
-  // calibration.build_model_buffer / bequest.wgsl estate_grid_offset()).
-  const returnModelArray = [].concat(returnModel.xi, returnModel.omega, returnModel.delta, returnModel.cholesky);
+  // Two-state Markov switching return model, calibrated in Python at build
+  // time and embedded in the payload (MODEL.returnModel). Append the 36-word
+  // two-state skew-t block (2 x [xi, omega, delta, row-major Cholesky]) plus
+  // the two transition probabilities p00/p11 after the tax tail, then the 11
+  // house constants (index 10 = target property value, read only by the
+  // bequest estate pass) and the bequest estate-grid tail [grid count,
+  // fractions...] (mirror of calibration.build_model_buffer / bequest.wgsl
+  // estate_grid_offset()). Deployed defaults are fixed at build time; the
+  // embedded parameters are used directly instead of re-fitting in the
+  // browser (the WGSL sampler is state-selected, see returns.wgsl).
+  const rm = MODEL.returnModel;
+  const returnModel = {
+    kind: rm.kind || "two-state-markov",
+    nu: rm.nu, observations: rm.observations,
+    p00: rm.p00, p11: rm.p11, prior0: rm.prior0,
+    states: [
+      { xi: rm.states[0].xi, omega: rm.states[0].omega, delta: rm.states[0].delta, cholesky: rm.states[0].cholesky },
+      { xi: rm.states[1].xi, omega: rm.states[1].omega, delta: rm.states[1].delta, cholesky: rm.states[1].cholesky }
+    ]
+  };
+  const s0 = returnModel.states[0], s1 = returnModel.states[1];
+  const returnModelArray = [].concat(s0.xi, s0.omega, s0.delta, s0.cholesky,
+                                     s1.xi, s1.omega, s1.delta, s1.cholesky,
+                                     [returnModel.p00, returnModel.p11]);
   const houseConstantsArray = [
     constants.targetHouseCapital, constants.mortgagePrincipal, constants.mortgageMonthlyRate,
     constants.monthlyPropertyTaxesCondo, constants.monthlyMarketRent,

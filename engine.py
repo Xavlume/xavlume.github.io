@@ -327,7 +327,7 @@ class Engine:
         pass_ = encoder.begin_compute_pass()
         pass_.set_pipeline(self.pipelines["generate_returns"])
         pass_.set_bind_group(0, bind_group)
-        pass_.dispatch_workgroups((simulations * total_months + 63) // 64, 1, 1)
+        pass_.dispatch_workgroups((simulations + 63) // 64, 1, 1)
         pass_.end()
 
         readback = self.device.create_buffer(
@@ -523,7 +523,7 @@ class Engine:
                 pass_.dispatch_workgroups(n_allocations * max(estate_grid, 1), 1, 1)
                 pass_.end()
             for name, workgroups in (
-                ("generate_returns", (count * total_months + 63) // 64),
+                ("generate_returns", (count + 63) // 64),
                 ("generate_layoffs", (count * career_years + 63) // 64),
                 ("accumulate", (count + 63) // 64),
                 ("solve", (count + 63) // 64),

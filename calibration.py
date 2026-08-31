@@ -176,6 +176,216 @@ def _jittered_cholesky(matrix: np.ndarray) -> np.ndarray:
 
 
 # ---------------------------------------------------------------------------
+# Two-state Markov switching return model.
+#
+# The base model is a single multivariate skew-t: ST(xi, omega, delta, Sigma,
+# nu) with nu = 5. The two-state variant keeps the same heavy-tailed skew-t
+# structure but lets the market regime switch between a quiet "bull" state
+# (low vol, positive drift) and a turbulent "bear" state (high vol, negative
+# drift) through a 2x2 Markov chain:
+#
+#     P = [[p00, 1-p00],      s_t = 0 (bull) persists with p00
+#          [1-p11, p11]]      s_t = 1 (bear) persists with p11
+#
+# Regime is driven by VEQT (the funds that matter). A univariate two-state
+# Gaussian HMM is fit by maximum likelihood (Hamilton filter) to the VEQT
+# monthly returns, giving per-state VEQT mean/vol and the transition matrix;
+# VGRO/VBAL follow their pooled Beta on VEQT (with a state-invariant residual
+# vol), so a switch tilts every fund at once. Each state then gets its own
+# skew-t parameter set, and the two state means are shifted by a common
+# constant so the stationary mean equals the same forward-looking CMA target
+# the base model uses -- the comparison isolates the regime-switching effect
+# without changing the unconditional expected return.
+# ---------------------------------------------------------------------------
+def _ols(y: np.ndarray, x: np.ndarray) -> Tuple[float, float, float]:
+    """Ordinary least squares y = a + b*x -> (beta, intercept, residual sd)."""
+    xx = np.stack([np.ones_like(x), x], axis=1)
+    coef, *_ = np.linalg.lstsq(xx, y, rcond=None)
+    resid = y - xx @ coef
+    return float(coef[1]), float(coef[0]), float(np.sqrt(((resid - resid.mean()) ** 2).mean()))
+
+
+def _fit_two_state_veqt(veqt: np.ndarray, seed: int = 0) -> Dict[str, object]:
+    """Maximum-likelihood 2-state Gaussian HMM on the VEQT monthly returns.
+
+    Returns dict with ``mu`` (2,), ``sigma`` (2,), ``p00``, ``p11``, ``prior0``
+    where state 0 carries the LOWER VEQT vol. A mild ridge on the persistence
+    keeps the two states from collapsing onto one regime on short histories.
+    """
+    from scipy.optimize import minimize
+
+    t_vec = veqt.reshape(-1).astype(np.float64)
+    n = t_vec.size
+
+    def _stationary(a_mat):
+        # Closed form for the 2x2 row-stochastic chain: prior(state 0) =
+        # (1 - p11) / (2 - p00 - p11), matching the WGSL markov_prior0().
+        p00 = a_mat[0, 0]
+        p11 = a_mat[1, 1]
+        return (1.0 - p11) / (2.0 - p00 - p11)
+
+    def _unpack(theta):
+        mu = theta[0:2]
+        sig = np.exp(theta[2:4])
+        p00 = 1.0 / (1.0 + np.exp(-theta[4]))
+        p11 = 1.0 / (1.0 + np.exp(-theta[5]))
+        return mu, sig, np.array([[p00, 1.0 - p00], [1.0 - p11, p11]])
+
+    def _nll(theta):
+        mu, sig, a_mat = _unpack(theta)
+        z = (t_vec[:, None] - mu[None, :]) / sig[None, :]
+        log_like = -0.5 * z ** 2 - 0.5 * math.log(2.0 * math.pi) - np.log(sig)[None, :]
+        prior = np.empty(2)
+        prior[0] = _stationary(a_mat)
+        prior[1] = 1.0 - prior[0]
+        alpha = np.maximum(prior * np.exp(log_like[0]), 1e-300)
+        ll = math.log(alpha.sum())
+        alpha = alpha / alpha.sum()
+        for t in range(1, n):
+            alpha = np.maximum((alpha @ a_mat) * np.exp(log_like[t]), 1e-300)
+            ll += math.log(alpha.sum())
+            alpha = alpha / alpha.sum()
+        if not np.isfinite(ll):
+            return 1e18
+        reg = 1e-2 * ((a_mat[0, 0] - 0.9) ** 2 + (a_mat[1, 1] - 0.9) ** 2)
+        return -ll + reg
+
+    rng = np.random.default_rng(seed)
+    theta0 = np.array([
+        t_vec.mean() + 0.6 * t_vec.std(), t_vec.mean() - 0.6 * t_vec.std(),
+        math.log(max(t_vec.std() * 0.8, 1e-4)), math.log(max(t_vec.std() * 1.2, 1e-4)),
+        0.9, 0.9,
+    ])
+    sizes = np.array([0.35, 0.35, 0.35, 0.35, 0.9, 0.9])
+    best = None
+    best_val = float("inf")
+    bounds = [(-0.05, 0.07)] * 2 + [(-6.0, -1.0)] * 2 + [(-2.5, 2.5)] * 2
+    for restart in range(6):
+        start = theta0 + 0.2 * rng.standard_normal(theta0.size) * sizes
+        result = minimize(_nll, start, method="L-BFGS-B", bounds=bounds,
+                          options={"maxiter": 3000, "ftol": 1e-12})
+        if result.fun < best_val:
+            best_val, best = result.fun, result
+    mu, sig, a_mat = _unpack(best.x)
+    order = np.argsort(sig)
+    mu = mu[order]
+    sig = sig[order]
+    # Reorder the transition matrix so state 0 = low vol after sorting and
+    # use the closed-form stationary prior (consistent with markov_prior0()).
+    a_re = a_mat[np.ix_(order, order)]
+    p00 = a_re[0, 0]
+    p11 = a_re[1, 1]
+    prior0 = _stationary(a_re)
+    return {"mu": mu, "sigma": sig, "p00": p00, "p11": p11, "prior0": prior0}
+
+
+def calibrate_two_state_markov(
+    returns: np.ndarray,
+    calibration: cfg.ModelCalibrationConfig,
+    cma: cfg.CMAConfig,
+) -> Dict[str, object]:
+    """Calibrate the two-state Markov switching skew-t model from (N, 3) returns.
+
+    Returns a dict carrying two skew-t parameter sets (indexed by state) plus
+    the transition probabilities, matching what :func:`build_model_buffer` and
+    the WGSL/JS/CPU samplers consume. State order: state 0 = low-vol/bull,
+    state 1 = high-vol/bear.
+    """
+    count, dims = returns.shape
+    veqt = returns[:, 0].astype(np.float64)
+
+    # Shared whole-sample objects: pooled correlation, moment skewness delta.
+    means = returns.mean(axis=0)
+    covariance = np.cov(returns, rowvar=False, ddof=1)
+    diag = np.sqrt(np.diag(covariance))
+    corr = covariance / np.outer(diag, diag)
+    nu = calibration.skew_degrees_freedom
+    b = b_nu(nu)
+    delta = _clamp_delta(_estimate_delta(returns, calibration.delta_cap), corr, calibration.delta_tolerance)
+
+    # Forward-looking CMA target (identical to the base model's mean_returns).
+    if cma.use_forward_looking_cmas:
+        target_mean = np.array(
+            [
+                math.log1p(cma.cmas[fund]) / 12.0 + 0.5 * covariance[i, i]
+                for i, fund in enumerate(cfg.BASE_UNDERLYING)
+            ]
+        )
+    else:
+        target_mean = means
+
+    # Fit the two-state regime on VEQT, then spread it to VGRO/VBAL by their
+    # pooled Beta on VEQT (state-invariant residual vol).
+    regime = _fit_two_state_veqt(veqt)
+    beta = np.zeros(dims)
+    intercept = np.zeros(dims)
+    resid_sd = np.zeros(dims)
+    beta[0], intercept[0], resid_sd[0] = 1.0, 0.0, 0.0
+    for fund, name in enumerate(cfg.BASE_UNDERLYING):
+        if fund == 0:
+            continue
+        beta[fund], intercept[fund], resid_sd[fund] = _ols(returns[:, fund].astype(np.float64), veqt)
+
+    state_mu = np.stack(
+        [
+            np.array([
+                regime["mu"][s],
+                intercept[1] + beta[1] * regime["mu"][s],
+                intercept[2] + beta[2] * regime["mu"][s],
+            ])
+            for s in range(2)
+        ]
+    )
+    state_sigma = np.stack(
+        [
+            np.array([
+                regime["sigma"][s],
+                math.sqrt(beta[1] ** 2 * regime["sigma"][s] ** 2 + resid_sd[1] ** 2),
+                math.sqrt(beta[2] ** 2 * regime["sigma"][s] ** 2 + resid_sd[2] ** 2),
+            ])
+            for s in range(2)
+        ]
+    )
+
+    # Shift both state means by a common constant so the stationary mean
+    # equals the forward-looking CMA target (isolates the regime effect).
+    prior0 = regime["prior0"]
+    stationary_mean = prior0 * state_mu[0] + (1.0 - prior0) * state_mu[1]
+    shift = target_mean - stationary_mean
+    state_mu = state_mu + shift[None, :]
+
+    # Per-state skew-t parameters.
+    xi = np.zeros((2, dims))
+    omega = np.zeros((2, dims))
+    cholesky = np.zeros((2, dims, dims))
+    for s in range(2):
+        omega[s] = np.sqrt(state_sigma[s] ** 2 / (nu / (nu - 2) - delta ** 2 * b ** 2))
+        inverse_omega = np.diag(1.0 / omega[s])
+        calibrated_corr = ((nu - 2) / nu) * (
+            inverse_omega @ (np.diag(state_sigma[s]) @ corr @ np.diag(state_sigma[s])) @ inverse_omega
+            + b ** 2 * np.outer(delta, delta)
+        )
+        np.fill_diagonal(calibrated_corr, 1.0)
+        cholesky[s] = _jittered_cholesky(calibrated_corr - np.outer(delta, delta))
+    xi = state_mu - omega * delta[None, :] * b
+
+    return {
+        "xi_two": xi,
+        "omega_two": omega,
+        "delta": delta,
+        "cholesky_two": cholesky,
+        "nu": nu,
+        "p00": float(regime["p00"]),
+        "p11": float(regime["p11"]),
+        "prior0": float(prior0),
+        "state_mu": state_mu,
+        "state_sigma": state_sigma,
+        "target_mean": target_mean,
+        "observations": count,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Deterministic skew-t sampler (NumPy reference, mirrors the WGSL sampler).
 # ---------------------------------------------------------------------------
 def _rotl32(x: np.ndarray, n: int) -> np.ndarray:
@@ -508,6 +718,131 @@ def _box_muller(u1, u2):
     return radius * np.cos(theta), radius * np.sin(theta)
 
 
+def _returns_markov_cpu(simulations, total_months, model, seed, config,
+                        rqmc=False, owen=False, direct_w=False):
+    """CPU mirror of the WGSL two-state Markov switching return sampler."""
+    nu = int(model["nu"])
+    xi = np.asarray(model["xi_two"], dtype=np.float64)     # (2,3)
+    omega = np.asarray(model["omega_two"], dtype=np.float64)
+    delta = np.asarray(model["delta"], dtype=np.float64)
+    cholesky = np.asarray(model["cholesky_two"], dtype=np.float64)  # (2,3,3)
+    p00 = float(model["p00"])
+    p11 = float(model["p11"])
+    # The shader compares the (exactly-representable) 24-bit uniform against
+    # the f32-rounded probabilities, so the CPU threshold must be the same
+    # f32 value or a boundary draw flips state between CPU and GPU.
+    p00f = float(np.float32(p00))
+    p11f = float(np.float32(p11))
+    prior0f = float(np.float32((np.float32(1.0) - np.float32(p11)) / (np.float32(2.0) - np.float32(p00) - np.float32(p11))))
+
+    pairs_needed = (nu + 5) // 2
+    sims = np.arange(simulations, dtype=np.uint32)
+    vtable = sobol_direction_numbers(config) if rqmc else None
+    lut = chi2_lut(config) if (rqmc and direct_w) else None
+
+    state = np.zeros(simulations, dtype=np.uint8)
+    out = np.zeros((simulations, total_months, 5), dtype=np.float32)
+    months_u = np.uint32(total_months)
+
+    for month in range(total_months):
+        counter = sims * months_u + np.uint32(month)
+        scale = np.zeros(simulations)
+        skew = np.zeros(simulations)
+        fund_normal = np.zeros((simulations, 3))
+        trans = np.zeros(simulations)
+        for pair in range(pairs_needed):
+            if rqmc:
+                coords = np.uint32(month) * np.uint32(10) + np.uint32(pair) * np.uint32(2)
+                if owen:
+                    u0 = rqmc_uniforms_owen(sims, coords, seed, vtable)
+                    u1 = rqmc_uniforms_owen(sims, coords + np.uint32(1), seed, vtable)
+                else:
+                    u0 = rqmc_uniforms(sims, coords, seed, vtable)
+                    u1 = rqmc_uniforms(sims, coords + np.uint32(1), seed, vtable)
+            else:
+                u0, u1 = threefry_uniforms(counter, np.uint32(pair), np.uint32(seed))
+            n0, n1 = _box_muller(u0, u1)
+            if direct_w:
+                if pair == 0:
+                    skew += np.abs(n0)
+                    scale += _chi2_lut_interp(u1, lut)
+                elif pair == 3:
+                    fund_normal[:, 0] += n0
+                    fund_normal[:, 1] += n1
+                elif pair == 4:
+                    fund_normal[:, 2] += n0
+                    trans[:] = u1
+                continue
+            t0 = pair * 2
+            t1 = pair * 2 + 1
+            if t0 == 0:
+                skew += np.abs(n0)
+            elif t0 <= nu:
+                scale += n0 * n0
+            elif t0 == nu + 1:
+                fund_normal[:, 0] += n0
+            elif t0 == nu + 2:
+                fund_normal[:, 1] += n0
+            elif t0 == nu + 3:
+                fund_normal[:, 2] += n0
+            if t1 <= nu:
+                scale += n1 * n1
+            elif t1 == nu + 1:
+                fund_normal[:, 0] += n1
+            elif t1 == nu + 2:
+                fund_normal[:, 1] += n1
+            elif t1 == nu + 3:
+                fund_normal[:, 2] += n1
+            if pair == 4:
+                trans[:] = u1
+
+        # Month-sequential Markov chain state update.
+        if month == 0:
+            state = np.where(trans < prior0f, 0, 1).astype(np.uint8)
+        else:
+            stay0 = trans < p00f
+            stay1 = trans < p11f
+            m0 = state == 0
+            m1 = ~m0
+            state[m0] = np.where(stay0[m0], 0, 1).astype(np.uint8)
+            state[m1] = np.where(stay1[m1], 1, 0).astype(np.uint8)
+
+        inv_scale = 1.0 / np.sqrt(np.maximum(scale / float(nu), 1e-12))
+        base = np.zeros((simulations, 3))
+        for s in (0, 1):
+            sel = state == s
+            if not sel.any():
+                continue
+            bs = np.zeros((int(sel.sum()), 3))
+            for i in range(3):
+                bs[:, i] = (
+                    xi[s, i] + omega[s, i] * (
+                        delta[i] * skew[sel]
+                        + fund_normal[sel, 0] * cholesky[s, i, 0]
+                        + fund_normal[sel, 1] * cholesky[s, i, 1]
+                        + fund_normal[sel, 2] * cholesky[s, i, 2]
+                    ) * inv_scale[sel]
+                )
+            base[sel] = np.maximum(bs, -0.95)
+
+        veqt = base[:, 0]
+        cma_cfg = config["cma"]
+        borrow = cma_cfg.real_borrow_rate_annual / 12.0
+        fee_15 = cma_cfg.extra_mer_15 / 12.0
+        fee_20 = cma_cfg.extra_mer_20 / 12.0
+        out[:, month, :] = np.stack(
+            (
+                veqt,
+                np.maximum(1.5 * veqt - 0.5 * borrow - fee_15, -0.95),
+                np.maximum(2.0 * veqt - borrow - fee_20, -0.95),
+                base[:, 1],
+                base[:, 2],
+            ),
+            axis=-1,
+        )
+    return out.astype(np.float32)
+
+
 def returns_cpu(simulations: int, total_months: int, model: Dict[str, object],
                 seed: int, config: Dict[str, object],
                 rqmc: bool = False, owen: bool = False,
@@ -522,7 +857,16 @@ def returns_cpu(simulations: int, total_months: int, model: Dict[str, object],
     the five scale normals with one LUT-inverted chi2 draw from the second
     uniform of pair 0 (net stratification of the volatility regime itself).
     All branches match the WGSL byte-for-byte within f32 precision.
+
+    If ``model`` carries the two-state Markov switching parameters (keys
+    ``xi_two``/``omega_two``/``cholesky_two``/``p00``), a per-simulation,
+    month-sequential Markov chain selects the active state and the return is
+    drawn from that state's skew-t -- mirroring the WGSL ``generate_returns``
+    (the state transition uniform is the otherwise-unused slot of pair 4).
     """
+    if "xi_two" in model:
+        return _returns_markov_cpu(simulations, total_months, model, seed, config,
+                                   rqmc=rqmc, owen=owen, direct_w=direct_w)
     nu = model["nu"]
     xi = model["xi"].astype(np.float64)
     omega = model["omega"].astype(np.float64)
@@ -1207,24 +1551,32 @@ def build_model_buffer(config, price_path) -> np.ndarray:
         [*, *+retire*4)          month0 rows
         [*, *+retire*4)          month1 rows
         [*, *+54)                tax values
-        [*, *+18)                skew-t constants (xi, omega, delta, Cholesky)
+        [*, *+36)                two-state skew-t constants (2 x xi, omega, delta,
+                                 Cholesky -- states [low-vol/bull, high-vol/bear])
+        [36, 38)                 transition probabilities (p00, p11)
         [*, *+11)                house constants (index 10 = target property value)
         [*, *+1+grid)            bequest estate-grid tail: [grid count, fractions...]
     """
     tables = build_model_tables(config)
     returns_df = load_returns(price_path)
-    model = calibrate_skew_t(
+    model = calibrate_two_state_markov(
         returns_df[list(cfg.BASE_UNDERLYING)].values.astype(np.float64),
         config["calibration"],
         config["cma"],
     )
     beq = config["bequest"]
+    # Two-state markov switching: 2 x 18 skew-t words, then (p00, p11).
     return_model = np.concatenate(
         [
-            model["xi"].astype(np.float64),
-            model["omega"].astype(np.float64),
+            model["xi_two"][0].astype(np.float64),
+            model["omega_two"][0].astype(np.float64),
             model["delta"].astype(np.float64),
-            model["cholesky"].astype(np.float64).reshape(-1),
+            np.asarray(model["cholesky_two"][0], dtype=np.float64).reshape(-1),
+            model["xi_two"][1].astype(np.float64),
+            model["omega_two"][1].astype(np.float64),
+            model["delta"].astype(np.float64),
+            np.asarray(model["cholesky_two"][1], dtype=np.float64).reshape(-1),
+            np.asarray([model["p00"], model["p11"]], dtype=np.float64),
         ]
     ).astype(np.float32)
     return np.concatenate(
@@ -1279,7 +1631,7 @@ def build_payload(price_path, config=None) -> Dict[str, object]:
         config = cfg.instance_config()
     returns_df = load_returns(price_path)
     returns = returns_df[list(cfg.BASE_UNDERLYING)].values.astype(np.float64)
-    model = calibrate_skew_t(returns, config["calibration"], config["cma"])
+    model = calibrate_two_state_markov(returns, config["calibration"], config["cma"])
     tables = build_model_tables(config)
     # The payload embeds the compact 4-u32 codes; the browser expands them
     # into the full 12-u32 GPU rows at run time (selectedAllocationBuffer).
@@ -1308,14 +1660,21 @@ def build_payload(price_path, config=None) -> Dict[str, object]:
         "historicalReturnCount": int(len(returns_df)),
         "mortalityAnnualProbability": list(MORTALITY_ANNUAL_PROBABILITY),
         "returnModel": {
-            "kind": "calibrated-skew-t",
-            "xi": model["xi"].round(10).tolist(),
-            "omega": model["omega"].round(10).tolist(),
-            "correlation": np.asarray(model["correlation"], dtype=np.float64).round(10).reshape(-1).tolist(),
-            "delta": model["delta"].round(10).tolist(),
-            "cholesky": np.asarray(model["cholesky"], dtype=np.float64).round(10).reshape(-1).tolist(),
+            "kind": "two-state-markov",
             "nu": int(model["nu"]),
             "observations": int(len(returns_df)),
+            "p00": round(float(model["p00"]), 10),
+            "p11": round(float(model["p11"]), 10),
+            "prior0": round(float(model["prior0"]), 10),
+            "states": [
+                {
+                    "xi": np.asarray(model["xi_two"][s], dtype=np.float64).round(10).tolist(),
+                    "omega": np.asarray(model["omega_two"][s], dtype=np.float64).round(10).tolist(),
+                    "delta": np.asarray(model["delta"], dtype=np.float64).round(10).tolist(),
+                    "cholesky": np.asarray(model["cholesky_two"][s], dtype=np.float64).round(10).reshape(-1).tolist(),
+                }
+                for s in range(2)
+            ],
             "dateStart": dates.iloc[0].strftime("%Y-%m-%d"),
             "dateEnd": dates.iloc[-1].strftime("%Y-%m-%d"),
         },
