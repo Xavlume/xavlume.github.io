@@ -21,7 +21,8 @@ struct Params {
     constants2: vec4<f32>,
     generate: vec4<u32>,     // PRNG seed, skew-t df, batch simulation count, batch offset
     generate1: vec4<f32>,
-    dispatch: vec4<u32>,     // unused here; mirrors the main Params layout (144 bytes)
+    dispatch: vec4<u32>,     // unused here; mirrors the main Params layout (160 bytes)
+    glide: vec4<f32>,        // glidepath shares; mirrors the main Params layout
 };
 
 @group(0) @binding(0) var<storage, read> params: Params;

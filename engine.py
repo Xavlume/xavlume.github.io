@@ -8,7 +8,7 @@ allocation is solved by parallel bisection on the GPU, Composite Ulcer Index
 scores are tracked per path, and the 201-point quantile ladders are reduced on
 the GPU by the same two-pass histogram shader the browser uses.
 
-It shares the shader sources, the 144-byte params buffer layout, the packed
+It shares the shader sources, the 160-byte params buffer layout, the packed
 model buffer and the allocation metadata with :mod:`build_html`, so the Python
 engine is a numerically equivalent reference for the standalone page.
 
@@ -91,7 +91,7 @@ def make_params(
     owen: bool = False,
     direct_w: bool = False,
 ) -> bytes:
-    """Build the 144-byte params buffer; layout identical to the browser's makeParams."""
+    """Build the 160-byte params buffer; layout identical to the browser's makeParams."""
     lc = config["lifecycle"]
     tax = config["tax"]
     cma = config["cma"]
@@ -102,7 +102,7 @@ def make_params(
     m75_start = int((75 - lc.retirement_age) * 12)
     post_wedge_month = int((lc.pension_start_age - lc.retirement_age) * 12)
 
-    params = np.zeros(144, dtype=np.uint8)
+    params = np.zeros(160, dtype=np.uint8)
     u32 = params.view(np.uint32)
     f32 = params.view(np.float32)
 
@@ -117,7 +117,8 @@ def make_params(
     ]
     f32[16:20] = [
         tax.capital_gains_tax_rate,
-        cma.cash_wedge_years,
+        cma.cash_wedge_fraction,  # fraction of the RETIREMENT SPAN; the
+        # shaders multiply it by the retirement month count (solver.x).
         tax.meltdown_bracket_annual / 12.0,
         tax.oas_clawback_threshold / 12.0,
     ]
@@ -151,6 +152,16 @@ def make_params(
         rqmc_mode,
         1 if generate_leveraged else 0,
         calibration.SOBOL_BITS if rqmc else 0,
+    ]
+    # glide: DECLINING .xy = (VEQT share, VGRO share), RISING .zw = (VBAL
+    # share, VGRO share); the third fund takes the remainder. One schedule for
+    # every glidepath phase (accumulation, bridge, post-pension) — mirrors
+    # makeParams in build_html.py and the Params struct in common.wgsl.
+    f32[36:40] = [
+        cma.glidepath_declining[0],
+        cma.glidepath_declining[1],
+        cma.glidepath_rising[0],
+        cma.glidepath_rising[1],
     ]
     return params.tobytes()
 

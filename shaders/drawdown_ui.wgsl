@@ -51,9 +51,12 @@ fn drawdown_ui(w: f32, simulation: u32, allocation: u32) -> vec4<f32> {
     let housing_cost = select(house_const_at(4u), house_const_at(3u), house_bought > 0.5);
 
     var cash_wedge = 0.0;
+    // Bridge cash wedge: carve out cashWedgeFraction of the RETIREMENT SPAN of
+    // annual spending up front, prorated across the accounts by their current
+    // weights (wedge = w * fraction * retirement YEARS = months / 12).
     if (bridge_cash) {
         let total = tfsa + rrsp + non_reg;
-        let actual_cash = min(total, w * params.constants1.y);
+        let actual_cash = min(total, w * params.constants1.y * f32(params.solver.x) / 12.0);
         let safe_total = max(total, 1e-10);
         let fraction = actual_cash / safe_total;
         tfsa -= tfsa * fraction;
@@ -114,7 +117,7 @@ fn drawdown_ui(w: f32, simulation: u32, allocation: u32) -> vec4<f32> {
 
         if (post_cash && !post_wedge_established && month == params.calendar.x) {
             let total = tfsa + rrsp + non_reg;
-            let needed = max(0.0, w * params.constants1.y - cash_wedge);
+            let needed = max(0.0, w * params.constants1.y * f32(params.solver.x) / 12.0 - cash_wedge);
             let actual_cash = min(total, needed);
             let safe_total = max(total, 1e-10);
             let fraction = actual_cash / safe_total;

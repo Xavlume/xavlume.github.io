@@ -12,8 +12,8 @@
 // quantiles.wgsl is a separate, self-contained module (its own Params and
 // bindings) because it runs as an independent reduced pipeline.
 //
-// The Params struct is a 144-byte uniform packed exactly like the JS
-// makeParams() and Python _make_params(). The storage-buffer memory layout is
+// The Params struct is a 160-byte storage buffer packed exactly like the JS
+// makeParams() and Python make_params(). The storage-buffer memory layout is
 // documented here so no magic integer offset lives inside a compute entry.
 
 struct Params {
@@ -21,7 +21,9 @@ struct Params {
     solver: vec4<u32>,       // retirement months, underlying-fund count, bisection steps, first age-75 month
     calendar: vec4<u32>,     // first post-pension month, current age, career start age, retirement age
     constants0: vec4<f32>,   // distribution yield, distribution tax, HISA return, CG inclusion
-    constants1: vec4<f32>,   // CG tax rate, cash-wedge years, meltdown target, OAS threshold
+    constants1: vec4<f32>,   // CG tax rate, cash-wedge FRACTION of the retirement
+                             // span (wedge = w * fraction * retirement months),
+                             // meltdown target, OAS threshold
     constants2: vec4<f32>,   // OAS clawback rate, employer match rate, match percent, accumulation path count
     generate: vec4<u32>,     // PRNG seed, skew-t df, batch simulation count, batch offset
     generate1: vec4<f32>,    // real borrowing rate/12, extra MER 1.5/12, extra MER 2.0/12, layoff probability
@@ -39,6 +41,12 @@ struct Params {
                              //      with << (32 - bits), which reconstructs the exact direction
                              //      number for k <= bits).  The chi2 LUT (modes 3/4) lives at
                              //      word offset dims * bits = (10*totalMonths + careerYears) * bits.
+    glide: vec4<f32>,        // glidepath switch shares (fractions of each phase's
+                             // month span): .xy = DECLINING (VEQT share, VGRO
+                             // share; VBAL gets the remainder), .zw = RISING
+                             // (VBAL share, VGRO share; VEQT gets the
+                             // remainder). One schedule for every phase that
+                             // runs a glidepath (accumulation, bridge, post).
 };
 
 @group(0) @binding(0) var<storage, read> params: Params;
@@ -252,6 +260,9 @@ fn monthly_tax(gross: f32) -> f32 {
 }
 
 fn phase_fund(code: u32, month: u32, first_end: u32, second_end: u32) -> u32 {
+    // first_end/second_end come from the allocation metadata's glide boundary
+    // words (built from params.glide's configurable shares, mirrored in
+    // calibration._glidepath_boundaries and the JS glidepathBoundaries).
     if (code < 5u) {
         return code;
     }

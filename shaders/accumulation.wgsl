@@ -5,7 +5,9 @@
 // One thread per (batch simulation, house strategy, accumulation path):
 // gid.y = house * pathCount + path. Paths 0..4 stay 100% in one underlying
 // fund; path 5 (DECLINING) switches VEQT -> VGRO -> VBAL and path 6 (RISING)
-// switches VBAL -> VGRO -> VEQT on a full monthly schedule.
+// switches VBAL -> VGRO -> VEQT on a configurable monthly schedule
+// (params.glide shares of the phase's month span; one schedule for every
+// glidepath phase).
 //
 // House mechanics per path:
 //   - HOUSE_NONE (renter): both savings streams merge; $8k/yr FHSA (max
@@ -29,23 +31,30 @@ fn accum_fund(path: u32, month: u32) -> u32 {
     if (path < 5u) {
         return path;
     }
+    // Configurable glidepath switch points, as fractions of the phase's month
+    // span (params.glide: DECLINING .xy = VEQT/VGRO shares, RISING .zw =
+    // VBAL/VGRO shares; the last fund takes the remainder). One schedule for
+    // every phase that runs a glidepath.
     let months = params.dimensions.w;
-    let half = (months + 1u) / 2u;
-    let quarter = (months + 2u) / 4u;
+    let shares = select(params.glide.zw, params.glide.xy, path == 5u);
+    let first_end = u32(max(0.0, min(1.0, shares.x)) * f32(months) + 0.5);
+    let second_end = first_end
+        + u32(max(0.0, min(1.0, shares.y)) * f32(months) + 0.5);
+    let capped = min(second_end, months);
     if (path == 5u) {  // DECLINING
-        if (month < half) {
+        if (month < first_end) {
             return 0u;
         }
-        if (month < half + quarter) {
+        if (month < capped) {
             return 3u;
         }
         return 4u;
     }
     // RISING
-    if (month < quarter) {
+    if (month < first_end) {
         return 4u;
     }
-    if (month < quarter * 2u) {
+    if (month < capped) {
         return 3u;
     }
     return 0u;
@@ -139,9 +148,8 @@ fn accumulate(@builtin(global_invocation_id) gid: vec3<u32>) {
     let fhsa_max = house_const_at(6u);
     let hbp_max = house_const_at(7u);
     let hbp_years = house_const_at(8u);
-    let accum_months = params.dimensions.w;
+    let alloc_months = params.dimensions.w;
     let is_renter = house == 0u;
-
     // Accumulation-phase drawdown index, memoized for track_drawdowns: the
     // cumulative-return-index UI of a (path, simulation) pair depends only on
     // the path's fund glidepath, so renter threads (house 0) compute it once
@@ -150,7 +158,7 @@ fn accumulate(@builtin(global_invocation_id) gid: vec3<u32>) {
     var peak_accum = 1.0;
     var sum_sq_accum = 0.0;
 
-    for (var month = 0u; month < accum_months; month += 1u) {
+    for (var month = 0u; month < alloc_months; month += 1u) {
         let fund = accum_fund(path, month);
         let r = return_at(simulation, month, fund);
         if (house == 0u) {
@@ -334,7 +342,7 @@ fn accumulate(@builtin(global_invocation_id) gid: vec3<u32>) {
                     h_non_reg_acb -= h_non_reg_acb * fraction;
                     h_non_reg -= needed;
                 }
-                let n_months = max(f32(accum_months) - f32(month), 1.0);
+                let n_months = max(f32(alloc_months) - f32(month), 1.0);
                 let growth = pow(1.0 + mortgage_monthly_rate, n_months);
                 mortgage_payment = mortgage_principal * mortgage_monthly_rate * growth / max(growth - 1.0, 1e-12);
                 hbp_repay_monthly = hbp_use / hbp_years / 12.0;
@@ -364,7 +372,7 @@ fn accumulate(@builtin(global_invocation_id) gid: vec3<u32>) {
         house_outcomes_set(house, simulation, vec2<f32>(house_bought, buy_month));
     }
     if (house == 0u) {
-        let ui_accum = sqrt(sum_sq_accum / max(f32(accum_months), 1.0));
+        let ui_accum = sqrt(sum_sq_accum / max(f32(alloc_months), 1.0));
         scratch[accum_ui_region_offset() + path * params.generate.z + simulation] = ui_accum;
     }
 }

@@ -251,7 +251,16 @@ const INPUT_SCHEMA = [
   ["tab-cma", 6, "realBorrowRateAnnual", "pct"],
   ["tab-cma", 7, "extraMer15", "pct"],
   ["tab-cma", 8, "extraMer20", "pct"],
-  ["tab-cma", 9, "cashWedgeYears", "years"],
+  ["tab-cma", 9, "cashWedgeFraction", "pct"],
+    // Glide fields interleave Declining (left column) / Rising (right column)
+    // row by row so each grid row pairs the same fund: VEQT, then VGRO, then
+    // VBAL — Declining share on the left, Rising share on the right.
+    ["tab-cma", 10, "glidepathDeclining0", "pct"],
+    ["tab-cma", 11, "glidepathRising0", "pct"],
+    ["tab-cma", 12, "glidepathDeclining1", "pct"],
+    ["tab-cma", 13, "glidepathRising1", "pct"],
+    ["tab-cma", 14, "glidepathDeclining2", "pct"],
+    ["tab-cma", 15, "glidepathRising2", "pct"],
 
   ["tab-spend", 0, "smilePhase0", "pct"],
   ["tab-spend", 1, "smilePhase1", "pct"],
@@ -286,6 +295,11 @@ function parseForKind(kind, text) {
   return Number(text);
 }
 
+// Glidepath + cash-tent percentage fields round-trip through the same pct
+// pipeline (50.0 <-> 0.50), so no special formatting is needed beyond making
+// sure the parsed values land on the config arrays (readModelInputs) and
+// formatting keeps two decimals (applyModelToInputs).
+
 function applyModelToInputs(config) {
   const inputs = schemaInputs();
   INPUT_SCHEMA.forEach(([tabId, inputIndex, field, kind]) => {
@@ -301,6 +315,8 @@ function modelValue(config, field) {
   if (field.startsWith("promotionPhase")) return config.promotionPhases[Number(field.slice(-1))].growth;
   if (field.startsWith("smilePhase")) return config.smileSchedule[Number(field.slice(-1))].change;
   if (field.startsWith("cma")) return config.cmas[field.slice(3)];
+  if (field.startsWith("glidepathDeclining")) return config.glidepathDeclining[Number(field.slice(-1))];
+  if (field.startsWith("glidepathRising")) return config.glidepathRising[Number(field.slice(-1))];
   return config[field];
 }
 
@@ -318,6 +334,8 @@ function readModelInputs() {
     if (field.startsWith("promotionPhase")) input.promotionPhases[Number(field.slice(-1))].growth = value;
     else if (field.startsWith("smilePhase")) input.smileSchedule[Number(field.slice(-1))].change = value;
     else if (field.startsWith("cma")) input.cmas[field.slice(3)] = value;
+    else if (field.startsWith("glidepathDeclining")) input.glidepathDeclining[Number(field.slice(-1))] = value;
+    else if (field.startsWith("glidepathRising")) input.glidepathRising[Number(field.slice(-1))] = value;
     else input[field] = value;
   }
   // The first promotion tier always begins at the career start age so the
@@ -332,6 +350,22 @@ function readModelInputs() {
   }
   if (input.startingSalary <= 0 || input.skewDegreesFreedom <= 2 || input.skewDegreesFreedom % 1 !== 0) {
     throw new Error("Starting salary must be positive and skew degrees of freedom must be an integer greater than 2.");
+  }
+  // Glidepath shares: each pair must sum to ~100% and no single fund share
+  // may exceed the max-share cap (mirrors config.glidepath_max_share).
+  const maxShare = C.glidepathMaxShare || 0.5;
+  const epsilon = 1e-6;
+  for (const [label, shares] of [["DECLINING", input.glidepathDeclining], ["RISING", input.glidepathRising]]) {
+    if (shares.some(v => !Number.isFinite(v) || v < 0)) throw new Error(label + " glidepath shares must be non-negative percentages.");
+    if (Math.abs(shares[0] + shares[1] + shares[2] - 1.0) > epsilon) {
+      throw new Error(label + " glidepath shares must sum to 100%.");
+    }
+    if (shares.some(v => v > maxShare + epsilon)) {
+      throw new Error(label + " glidepath shares: no single fund may exceed " + (maxShare * 100).toFixed(0) + "%.");
+    }
+  }
+  if (!Number.isFinite(input.cashWedgeFraction) || input.cashWedgeFraction < 0 || input.cashWedgeFraction > 1) {
+    throw new Error("Cash wedge must be a percentage between 0% and 100% of the retirement span.");
   }
   return input;
 }
@@ -499,7 +533,8 @@ function buildDynamicModel(config) {
     careerYears: config.retirementAge - config.careerStartAge, funds: C.funds,
     annualDistributionYield: config.annualDistributionYield, taxOnDistributions: config.taxOnDistributions,
     capitalGainsInclusion: config.capitalGainsInclusionRate, capitalGainsTaxRate: config.capitalGainsTaxRate,
-    hisaMonthly: Math.pow(1 + config.hisaAnnualRealReturn, 1 / 12) - 1, cashWedgeYears: config.cashWedgeYears,
+    hisaMonthly: Math.pow(1 + config.hisaAnnualRealReturn, 1 / 12) - 1, cashWedgeFraction: config.cashWedgeFraction,
+    glidepathDeclining: config.glidepathDeclining || C.glidepathDeclining, glidepathRising: config.glidepathRising || C.glidepathRising,
     meltdownMonthly: config.meltdownBracketAnnual / 12, oasThresholdMonthly: config.oasClawbackThreshold / 12, oasClawbackRate: config.oasClawbackRate,
     employerMatchRate: config.employerMatchRate, employerMatchPercent: config.employerMatchPercent,
     realBorrowRateAnnual: config.realBorrowRateAnnual, extraMer15: config.extraMer15, extraMer20: config.extraMer20,
@@ -681,12 +716,14 @@ function rqmcSamplerEnabled(dynamic, simulations) {
 // ---------------------------------------------------------------------------
 function makeParams(dynamic, simulations, allocations, batchSims, simOffset, columnsPerWorkgroup = 1, generateLeveraged = true, rqmcBits = 0) {
   const dimensions = dynamic.constants;
-  const buffer = new ArrayBuffer(144);
+  const buffer = new ArrayBuffer(160);
   new Uint32Array(buffer, 0, 4).set([simulations, allocations, dimensions.totalMonths, dimensions.accumMonths]);
   new Uint32Array(buffer, 16, 4).set([dimensions.retireMonths, RETURN_FUND_COUNT, dimensions.bisectionSteps, dimensions.m75Start]);
   new Uint32Array(buffer, 32, 4).set([dimensions.postWedgeMonth, dimensions.currentAge, dimensions.careerStartAge, dimensions.retirementAge]);
   new Float32Array(buffer, 48, 4).set([dimensions.annualDistributionYield / 12, dimensions.taxOnDistributions, dimensions.hisaMonthly, dimensions.capitalGainsInclusion]);
-  new Float32Array(buffer, 64, 4).set([dimensions.capitalGainsTaxRate, dimensions.cashWedgeYears, dimensions.meltdownMonthly, dimensions.oasThresholdMonthly]);
+  // constants1.y: the cash-wedge FRACTION of the retirement span — the
+  // shaders multiply it by the retirement month count (solver.x).
+  new Float32Array(buffer, 64, 4).set([dimensions.capitalGainsTaxRate, dimensions.cashWedgeFraction, dimensions.meltdownMonthly, dimensions.oasThresholdMonthly]);
   new Float32Array(buffer, 80, 4).set([dimensions.oasClawbackRate, dimensions.employerMatchRate, dimensions.employerMatchPercent, dimensions.funds.length]);
   new Uint32Array(buffer, 96, 4).set([dimensions.seed, dimensions.skewDegreesFreedom, batchSims, simOffset]);
   new Float32Array(buffer, 112, 4).set([dimensions.realBorrowRateAnnual / 12, dimensions.extraMer15 / 12, dimensions.extraMer20 / 12, dimensions.layoffAnnualProbability]);
@@ -695,6 +732,10 @@ function makeParams(dynamic, simulations, allocations, batchSims, simOffset, col
   // 0 = skip them (leverage-off runs never read funds 1/2).
   // dispatch.w: RQMC direction-bit width (14); 0 = RQMC off.
   new Uint32Array(buffer, 128, 4).set([columnsPerWorkgroup, rqmcBits > 0 ? 1 : 0, generateLeveraged ? 1 : 0, rqmcBits]);
+  // glide: DECLINING .xy = (VEQT share, VGRO share), RISING .zw = (VBAL
+  // share, VGRO share); the third fund takes the remainder. One schedule for
+  // every glidepath phase (accumulation, bridge, post-pension).
+  new Float32Array(buffer, 144, 4).set([dimensions.glidepathDeclining[0], dimensions.glidepathDeclining[1], dimensions.glidepathRising[0], dimensions.glidepathRising[1]]);
   return buffer;
 }
 
@@ -880,14 +921,21 @@ function selectedAllocationIndices(count, leverage) {
   return Array.from({length: count}, (_, i) => pool[Math.floor(i * (pool.length - 1) / (count - 1))]);
 }
 
-function glidepathBoundaries(code, months) {
+function glidepathBoundaries(code, months, constants) {
+  // Mirrors calibration._glidepath_boundaries exactly: the first two legs of
+  // the glidepath take their share of `months` (rounded to nearest month,
+  // remaining months reserved for the last leg). The shares come from
+  // dynamic.constants (the editable settings), one schedule for every
+  // glidepath phase.
+  const dec = constants.glidepathDeclining, ris = constants.glidepathRising;
+  const roundMonths = share => Math.round(Math.max(0, Math.min(1, share)) * months);
   if (code === 5) {
-    const half = Math.floor((months + 1) / 2);
-    return [half, half + Math.floor((months + 2) / 4)];
+    const first = roundMonths(dec[0]);
+    return [first, first + roundMonths(dec[1])];
   }
   if (code === 6) {
-    const quarter = Math.floor((months + 2) / 4);
-    return [quarter, quarter * 2];
+    const first = roundMonths(ris[0]);
+    return [first, first + roundMonths(ris[1])];
   }
   return [0, 0];
 }
@@ -899,9 +947,9 @@ function selectedAllocationBuffer(count, constants, leverage) {
     const metadata = ALLOCATION_METADATA.subarray(indices[i] * 4, indices[i] * 4 + 4);
     const offset = i * 12;
     data.set(metadata, offset);
-    data.set(glidepathBoundaries(metadata[0], constants.accumMonths), offset + 4);
-    data.set(glidepathBoundaries(metadata[1], constants.bridgeMonths), offset + 6);
-    data.set(glidepathBoundaries(metadata[2], constants.retireMonths - constants.bridgeMonths), offset + 8);
+    data.set(glidepathBoundaries(metadata[0], constants.accumMonths, constants), offset + 4);
+    data.set(glidepathBoundaries(metadata[1], constants.bridgeMonths, constants), offset + 6);
+    data.set(glidepathBoundaries(metadata[2], constants.retireMonths - constants.bridgeMonths, constants), offset + 8);
   }
   return {indices, data};
 }
@@ -1016,7 +1064,7 @@ async function simulate(settings, run) {
       const count = Math.min(batchSize, totalSims - offset);
       const batchStarted = performance.now();
       logDebug("Batch", (batchNumber + 1) + "/" + totalBatches, "sims", offset, "..", offset + count - 1);
-      const params = device.createBuffer({size: 144, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST});
+      const params = device.createBuffer({size: 160, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST});
       device.queue.writeBuffer(params, 0, makeParams(dynamic, totalSims, allocationCount, count, offset, columnsPerWorkgroup, leverage, rqmcBits));
       const bindGroup = device.createBindGroup({layout: context.layout, entries: [params, ...batchBindings].map((buffer, binding) => ({binding, resource: {buffer}}))});
       const bequestBindGroup = device.createBindGroup({layout: context.bequestLayout, entries: [params, spendingBuffer, simDataBuffer, allocationBuffer, modelBuffer, estateBuffer, estateHistBuffer].map((buffer, binding) => ({binding, resource: {buffer}}))});
@@ -1101,7 +1149,7 @@ async function simulate(settings, run) {
     if (run.cancelled) throw new Error("__CANCELLED__");
     setProgress(95, 100, "Computing quantiles on GPU...");
     logDebug("Quantile reduction: dispatching", allocationCount, "workgroups over", totalSims, "paths each");
-    const quantileParams = device.createBuffer({size: 144, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST});
+    const quantileParams = device.createBuffer({size: 160, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST});
     device.queue.writeBuffer(quantileParams, 0, makeParams(dynamic, totalSims, allocationCount, totalSims, 0, 1));
     const quantileBindGroup = device.createBindGroup({layout: context.quantileLayout, entries: [quantileParams, spendingBuffer, quantileBuffer].map((buffer, binding) => ({binding, resource: {buffer}}))});
     const encoder = device.createCommandEncoder();
@@ -1122,7 +1170,7 @@ async function simulate(settings, run) {
     // re-rank later — so they are cached like the spending quantiles and
     // never touch the solver.
     setProgress(97, 100, "Computing terminal-estate ladders on GPU...");
-    const bequestParams = device.createBuffer({size: 144, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST});
+    const bequestParams = device.createBuffer({size: 160, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST});
     device.queue.writeBuffer(bequestParams, 0, makeParams(dynamic, totalSims, allocationCount, totalSims, 0, 1));
     const bequestFinalBindGroup = device.createBindGroup({layout: context.bequestLayout, entries: [bequestParams, spendingBuffer, simDataBuffer, allocationBuffer, modelBuffer, estateBuffer, estateHistBuffer].map((buffer, binding) => ({binding, resource: {buffer}}))});
     const bequestEncoder = device.createCommandEncoder();
@@ -2103,8 +2151,11 @@ def _inject_status_strip(html: str, payload: dict) -> str:
     return html
 
 
-# Toggle placed above the "Leverage Borrowing & Cash Buffer" group in the
-# CMAs tab: ON = use the expected returns listed above, OFF = historical.
+# The settings validation reads the max share from the payload constants
+# (C.glidepathMaxShare), so make sure lifecycle_constants carries it — done in
+# calibration.lifecycle_constants. The template's section label is renamed
+# during the build; the toggle anchor below still matches the ORIGINAL
+# template label string (the rename happens in the same replace call).
 CMA_TOGGLE_BLOCK = """\
 <div class="cma-toggle-row">
   <label class="cma-toggle" for="inp-use-forward-cmas">
@@ -2119,7 +2170,9 @@ def _inject_cma_toggle(html: str) -> str:
     marker = '<div class="section-label">Leverage Borrowing & Cash Buffer</div>'
     if marker not in html:
         raise RuntimeError("Could not locate the 'Leverage Borrowing & Cash Buffer' section label.")
-    return html.replace(marker, CMA_TOGGLE_BLOCK + "\n" + marker, 1)
+    return html.replace(marker, CMA_TOGGLE_BLOCK + "\n" + marker, 1).replace(
+        marker, '<div class="section-label">Leverage, Borrowing, Cash Buffer & Glidepaths</div>', 1
+    )
 
 
 # The house savings stream cap was missing from the UI; inject it right after

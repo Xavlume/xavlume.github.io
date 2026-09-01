@@ -1266,7 +1266,10 @@ def lifecycle_constants(config) -> Dict[str, object]:
         "capitalGainsInclusion": float(tax.capital_gains_inclusion_rate),
         "capitalGainsTaxRate": float(tax.capital_gains_tax_rate),
         "hisaMonthly": float((1.0 + cma.hisa_annual_real_return) ** (1.0 / 12.0) - 1.0),
-        "cashWedgeYears": float(cma.cash_wedge_years),
+        "cashWedgeFraction": float(cma.cash_wedge_fraction),
+        "glidepathDeclining": [float(v) for v in cma.glidepath_declining],
+        "glidepathRising": [float(v) for v in cma.glidepath_rising],
+        "glidepathMaxShare": float(cma.glidepath_max_share),
         "meltdownMonthly": float(tax.meltdown_bracket_annual / 12.0),
         "oasThresholdMonthly": float(tax.oas_clawback_threshold / 12.0),
         "realBorrowRateAnnual": float(cma.real_borrow_rate_annual),
@@ -1355,7 +1358,10 @@ def model_defaults(config) -> Dict[str, object]:
         "extraMer15": cma.extra_mer_15,
         "extraMer20": cma.extra_mer_20,
         "hisaAnnualRealReturn": cma.hisa_annual_real_return,
-        "cashWedgeYears": cma.cash_wedge_years,
+        "cashWedgeFraction": cma.cash_wedge_fraction,
+        "glidepathDeclining": list(cma.glidepath_declining),
+        "glidepathRising": list(cma.glidepath_rising),
+        "glidepathMaxShare": cma.glidepath_max_share,
         "meltdownBracketAnnual": tax.meltdown_bracket_annual,
         "oasClawbackThreshold": tax.oas_clawback_threshold,
         "oasClawbackRate": tax.oas_clawback_rate,
@@ -1402,20 +1408,23 @@ def _rounded_fraction_months(months, numerator, denominator):
     return (months * numerator + denominator // 2) // denominator
 
 
-def _phase_funds(option, months, fund_indices):
+def _phase_funds(option, months, fund_indices, fractions=None):
     base_option = option.replace("+CASH", "")
     if base_option in cfg.GLIDEPATH_OPTIONS and option != base_option:
         raise ValueError(f"{base_option} cannot be combined with cash")
     if base_option not in cfg.GLIDEPATH_OPTIONS:
         return np.full(months, fund_indices[base_option], dtype=np.int8)
-    quarter = _rounded_fraction_months(months, 1, 4)
-    half = _rounded_fraction_months(months, 1, 2)
+    dec = cfg.instance_config()["cma"].glidepath_declining if fractions is None else fractions
+    ris = cfg.instance_config()["cma"].glidepath_rising if fractions is None else fractions
     if base_option == "DECLINING":
-        counts = (half, quarter, months - half - quarter)
+        shares = dec
         funds = (fund_indices[cfg.FUNDS[0]], fund_indices[cfg.FUNDS[3]], fund_indices[cfg.FUNDS[4]])
     else:
-        counts = (quarter, quarter, months - 2 * quarter)
+        shares = ris
         funds = (fund_indices[cfg.FUNDS[4]], fund_indices[cfg.FUNDS[3]], fund_indices[cfg.FUNDS[0]])
+    first_count = _rounded_fraction_months(months, shares[0], 1)
+    second_count = max(0, months - first_count - _rounded_fraction_months(months, shares[1], 1))
+    counts = (first_count, second_count, max(0, months - first_count - second_count))
     return np.repeat(funds, counts).astype(np.int8)
 
 
@@ -1469,13 +1478,23 @@ def build_allocation_map(config):
     return mapping, names
 
 
-def _glidepath_boundaries(code, months):
+def _glidepath_boundaries(code, months, config=None):
+    """Switch-point months for the glidepath codes, from the config shares.
+
+    The CMA config carries one DECLINING and one RISING (a, b) share pair
+    (c = 1 - a - b implied); the boundaries are the cumulative month counts of
+    the first two legs, mirroring exactly the JS ``glidepathBoundaries`` and
+    the shader ``accum_fund``/``phase_fund`` switch checks.
+    """
+    cma = (config or cfg.instance_config())["cma"]
+    dec = cma.glidepath_declining
+    ris = cma.glidepath_rising
     if code == len(cfg.FUNDS):  # DECLINING
-        half = (months + 1) // 2
-        return [half, half + (months + 2) // 4]
+        first = _rounded_fraction_months(months, dec[0], 1)
+        return [first, first + _rounded_fraction_months(months, dec[1], 1)]
     if code == len(cfg.FUNDS) + 1:  # RISING
-        quarter = (months + 2) // 4
-        return [quarter, quarter * 2]
+        first = _rounded_fraction_months(months, ris[0], 1)
+        return [first, first + _rounded_fraction_months(months, ris[1], 1)]
     return [0, 0]
 
 
@@ -1509,9 +1528,9 @@ def allocation_metadata(config, allocation_indices=None):
             flags,
         ]
         metadata[out_index, 0:4] = codes
-        metadata[out_index, 4:6] = _glidepath_boundaries(codes[0], accum_months)
-        metadata[out_index, 6:8] = _glidepath_boundaries(codes[1], bridge_months)
-        metadata[out_index, 8:10] = _glidepath_boundaries(codes[2], retire_months - bridge_months)
+        metadata[out_index, 4:6] = _glidepath_boundaries(codes[0], accum_months, config)
+        metadata[out_index, 6:8] = _glidepath_boundaries(codes[1], bridge_months, config)
+        metadata[out_index, 8:10] = _glidepath_boundaries(codes[2], retire_months - bridge_months, config)
         out_names.append(name)
     return metadata, out_names
 

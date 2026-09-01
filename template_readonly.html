@@ -412,20 +412,20 @@ td { padding: 5px 10px; vertical-align: middle; white-space: nowrap; }
     <section class="kpi-row">
       <div class="kpi-card featured">
         <span class="kpi-label">Certainty Equivalent</span>
-        <div class="kpi-num green" id="kpi-ce">$3,902<span style="font-size:14px; font-weight:500; color:var(--text-muted)">/mo</span></div>
+        <div class="kpi-num green" id="kpi-ce">$3,938<span style="font-size:14px; font-weight:500; color:var(--text-muted)">/mo</span></div>
         <div class="kpi-subtext" id="kpi-ce-sub">The steady monthly income you would view as equally desirable to this strategy's fluctuating market outcomes, given your risk aversion (&gamma; = 4.0).</div>
         <div class="kpi-subtext" id="kpi-bequest">Spends 100% of max sustainable to leave a median estate of $508,308.</div>
       </div>
 
       <div class="kpi-card">
         <span class="kpi-label">Median Spending</span>
-        <div class="kpi-num" id="kpi-median">$5,512<span style="font-size:14px; font-weight:500; color:var(--text-muted)">/mo</span></div>
+        <div class="kpi-num" id="kpi-median">$5,764<span style="font-size:14px; font-weight:500; color:var(--text-muted)">/mo</span></div>
         <div class="kpi-subtext">In half of all simulated market lifecycles, your monthly net spending after housing is at or above this level.</div>
       </div>
 
       <div class="kpi-card">
         <span class="kpi-label">Downside Crash Floor</span>
-        <div class="kpi-num amber" id="kpi-floor">$3,128<span style="font-size:14px; font-weight:500; color:var(--text-muted)">/mo</span></div>
+        <div class="kpi-num amber" id="kpi-floor">$3,118<span style="font-size:14px; font-weight:500; color:var(--text-muted)">/mo</span></div>
         <div class="kpi-subtext">In 90% of market simulations you spend at least this much; only the worst 10% of prolonged bear markets fall below.</div>
       </div>
 
@@ -822,8 +822,32 @@ td { padding: 5px 10px; vertical-align: middle; white-space: nowrap; }
             <div class="input-affix-wrap"><input type="number" step="0.01" class="form-input" value="0.40"><span class="affix suffix">% / yr</span></div>
           </div>
           <div class="input-field">
-            <span class="field-label">Cash Wedge Duration</span>
-            <div class="input-affix-wrap"><input type="number" step="0.5" class="form-input" value="3.0"><span class="affix suffix">yrs</span></div>
+            <span class="field-label">Cash Wedge</span>
+            <div class="input-affix-wrap"><input type="number" step="1" class="form-input" value="15.0"><span class="affix suffix">% of span</span></div>
+          </div>
+          <div class="input-field">
+            <span class="field-label">Declining Glide — VEQT</span>
+            <div class="input-affix-wrap"><input type="number" step="1" class="form-input" value="50.0"><span class="affix suffix">%</span></div>
+          </div>
+          <div class="input-field">
+            <span class="field-label">Rising Glide — VBAL</span>
+            <div class="input-affix-wrap"><input type="number" step="1" class="form-input" value="40.0"><span class="affix suffix">%</span></div>
+          </div>
+          <div class="input-field">
+            <span class="field-label">Declining Glide — VGRO</span>
+            <div class="input-affix-wrap"><input type="number" step="1" class="form-input" value="20.0"><span class="affix suffix">%</span></div>
+          </div>
+          <div class="input-field">
+            <span class="field-label">Rising Glide — VGRO</span>
+            <div class="input-affix-wrap"><input type="number" step="1" class="form-input" value="50.0"><span class="affix suffix">%</span></div>
+          </div>
+          <div class="input-field">
+            <span class="field-label">Declining Glide — VBAL</span>
+            <div class="input-affix-wrap"><input type="number" step="1" class="form-input" value="30.0"><span class="affix suffix">%</span></div>
+          </div>
+          <div class="input-field">
+            <span class="field-label">Rising Glide — VEQT</span>
+            <div class="input-affix-wrap"><input type="number" step="1" class="form-input" value="10.0"><span class="affix suffix">%</span></div>
           </div>
         </div>
       </div>
@@ -901,19 +925,19 @@ td { padding: 5px 10px; vertical-align: middle; white-space: nowrap; }
 <script>
 // Mock Quantitative Dataset
 const DATASET = [
-  { rank: 1, name: "HOUSE_VEQT_VEQT_VBAL+CASH_VEQT", house: "HOUSE_VEQT", accum: "VEQT", bridge: "VBAL+CASH", post: "VEQT", buyAge: 33.4167, mortgage: 1899.45, ce: 3901.89, median: 5512.4, floor: 3128.2, p90: 10380.4, ui: 13.8851, hasCash: true, hasGlide: false, isBuyer: true },
-  { rank: 2, name: "HOUSE_VEQT_VEQT_VGRO+CASH_VEQT", house: "HOUSE_VEQT", accum: "VEQT", bridge: "VGRO+CASH", post: "VEQT", buyAge: 33.4167, mortgage: 1899.45, ce: 3900.62, median: 5713.8, floor: 3072.7, p90: 10910.1, ui: 15.7556, hasCash: true, hasGlide: false, isBuyer: true },
-  { rank: 3, name: "HOUSE_VEQT_VEQT_VBAL+CASH_DECLINING", house: "HOUSE_VEQT", accum: "VEQT", bridge: "VBAL+CASH", post: "DECLINING", buyAge: 33.4167, mortgage: 1899.45, ce: 3895.92, median: 5471.2, floor: 3094.2, p90: 10319.5, ui: 13.5062, hasCash: true, hasGlide: true, isBuyer: true },
-  { rank: 4, name: "HOUSE_VEQT_VEQT_VGRO+CASH_DECLINING", house: "HOUSE_VEQT", accum: "VEQT", bridge: "VGRO+CASH", post: "DECLINING", buyAge: 33.4167, mortgage: 1899.45, ce: 3895.36, median: 5697.3, floor: 3077, p90: 10806.8, ui: 15.388, hasCash: true, hasGlide: true, isBuyer: true },
-  { rank: 5, name: "HOUSE_VGRO_VEQT_VBAL+CASH_VEQT", house: "HOUSE_VGRO", accum: "VEQT", bridge: "VBAL+CASH", post: "VEQT", buyAge: 33.8333, mortgage: 1929.43, ce: 3889.31, median: 5458.3, floor: 3096.6, p90: 10275.3, ui: 13.885, hasCash: true, hasGlide: false, isBuyer: true },
-  { rank: 6, name: "HOUSE_VEQT_VEQT_VBAL+CASH_VEQT+CASH", house: "HOUSE_VEQT", accum: "VEQT", bridge: "VBAL+CASH", post: "VEQT+CASH", buyAge: 33.4167, mortgage: 1899.45, ce: 3888.26, median: 5461.1, floor: 3093.2, p90: 10461.4, ui: 13.8202, hasCash: true, hasGlide: false, isBuyer: true },
-  { rank: 7, name: "HOUSE_VGRO_VEQT_VGRO+CASH_VEQT", house: "HOUSE_VGRO", accum: "VEQT", bridge: "VGRO+CASH", post: "VEQT", buyAge: 33.8333, mortgage: 1929.43, ce: 3884.26, median: 5685.6, floor: 3074.3, p90: 10885.7, ui: 15.7464, hasCash: true, hasGlide: false, isBuyer: true },
-  { rank: 8, name: "HOUSE_VEQT_VEQT_VBAL+CASH_VGRO", house: "HOUSE_VEQT", accum: "VEQT", bridge: "VBAL+CASH", post: "VGRO", buyAge: 33.4167, mortgage: 1899.45, ce: 3884, median: 5381.6, floor: 3103.3, p90: 10051, ui: 13.1354, hasCash: true, hasGlide: false, isBuyer: true },
-  { rank: 9, name: "HOUSE_VGRO_VEQT_VBAL+CASH_DECLINING", house: "HOUSE_VGRO", accum: "VEQT", bridge: "VBAL+CASH", post: "DECLINING", buyAge: 33.8333, mortgage: 1929.43, ce: 3883.29, median: 5432.5, floor: 3060.6, p90: 10207.6, ui: 13.506, hasCash: true, hasGlide: true, isBuyer: true },
-  { rank: 10, name: "HOUSE_VBAL_VEQT_VBAL+CASH_VEQT", house: "HOUSE_VBAL", accum: "VEQT", bridge: "VBAL+CASH", post: "VEQT", buyAge: 34, mortgage: 1941.76, ce: 3883.29, median: 5413.5, floor: 3076.6, p90: 10208.8, ui: 13.8903, hasCash: true, hasGlide: false, isBuyer: true },
-  { rank: 11, name: "HOUSE_VEQT_VEQT_VGRO+CASH_VEQT+CASH", house: "HOUSE_VEQT", accum: "VEQT", bridge: "VGRO+CASH", post: "VEQT+CASH", buyAge: 33.4167, mortgage: 1899.45, ce: 3883.14, median: 5697.7, floor: 3059.6, p90: 10943.6, ui: 15.7022, hasCash: true, hasGlide: false, isBuyer: true },
-  { rank: 12, name: "HOUSE_VEQT_VEQT_VGRO+CASH_VGRO", house: "HOUSE_VEQT", accum: "VEQT", bridge: "VGRO+CASH", post: "VGRO", buyAge: 33.4167, mortgage: 1899.45, ce: 3882.47, median: 5575.9, floor: 3060.7, p90: 10554.6, ui: 15.0438, hasCash: true, hasGlide: false, isBuyer: true },
-  { rank: 13, name: "HOUSE_VEQT_VEQT_VBAL+CASH_RISING", house: "HOUSE_VEQT", accum: "VEQT", bridge: "VBAL+CASH", post: "RISING", buyAge: 33.4167, mortgage: 1899.45, ce: 3881.48, median: 5320, floor: 3121.8, p90: 9808.1, ui: 13.1974, hasCash: true, hasGlide: true, isBuyer: true },
+  { rank: 1, name: "HOUSE_VEQT_VEQT_VGRO+CASH_VEQT", house: "HOUSE_VEQT", accum: "VEQT", bridge: "VGRO+CASH", post: "VEQT", buyAge: 33.4167, mortgage: 1899.45, ce: 3938.24, median: 5764.5, floor: 3117.7, p90: 10907.8, ui: 15.3027, hasCash: true, hasGlide: false, isBuyer: true },
+  { rank: 2, name: "HOUSE_VEQT_VEQT_VBAL+CASH_VEQT", house: "HOUSE_VEQT", accum: "VEQT", bridge: "VBAL+CASH", post: "VEQT", buyAge: 33.4167, mortgage: 1899.45, ce: 3934.13, median: 5587.6, floor: 3140.6, p90: 10630.7, ui: 13.5505, hasCash: true, hasGlide: false, isBuyer: true },
+  { rank: 3, name: "HOUSE_VEQT_VEQT_VGRO+CASH_DECLINING", house: "HOUSE_VEQT", accum: "VEQT", bridge: "VGRO+CASH", post: "DECLINING", buyAge: 33.4167, mortgage: 1899.45, ce: 3932.91, median: 5737.8, floor: 3102.2, p90: 10821, ui: 14.9051, hasCash: true, hasGlide: true, isBuyer: true },
+  { rank: 4, name: "HOUSE_VGRO_VEQT_VGRO+CASH_VEQT", house: "HOUSE_VGRO", accum: "VEQT", bridge: "VGRO+CASH", post: "VEQT", buyAge: 33.8333, mortgage: 1929.43, ce: 3927.84, median: 5744, floor: 3108.8, p90: 10794.2, ui: 15.3041, hasCash: true, hasGlide: false, isBuyer: true },
+  { rank: 5, name: "HOUSE_VEQT_VEQT_VBAL+CASH_DECLINING", house: "HOUSE_VEQT", accum: "VEQT", bridge: "VBAL+CASH", post: "DECLINING", buyAge: 33.4167, mortgage: 1899.45, ce: 3926.87, median: 5561.2, floor: 3156.2, p90: 10521, ui: 13.1409, hasCash: true, hasGlide: true, isBuyer: true },
+  { rank: 6, name: "HOUSE_VGRO_VEQT_VBAL+CASH_VEQT", house: "HOUSE_VGRO", accum: "VEQT", bridge: "VBAL+CASH", post: "VEQT", buyAge: 33.8333, mortgage: 1929.43, ce: 3923.34, median: 5566.1, floor: 3127.9, p90: 10506.1, ui: 13.5452, hasCash: true, hasGlide: false, isBuyer: true },
+  { rank: 7, name: "HOUSE_VEQT_VEQT_VEQT+CASH_VEQT", house: "HOUSE_VEQT", accum: "VEQT", bridge: "VEQT+CASH", post: "VEQT", buyAge: 33.4167, mortgage: 1899.45, ce: 3922.34, median: 5924, floor: 3051.1, p90: 11692.4, ui: 16.8498, hasCash: true, hasGlide: false, isBuyer: true },
+  { rank: 8, name: "HOUSE_VGRO_VEQT_VGRO+CASH_DECLINING", house: "HOUSE_VGRO", accum: "VEQT", bridge: "VGRO+CASH", post: "DECLINING", buyAge: 33.8333, mortgage: 1929.43, ce: 3919.36, median: 5700.2, floor: 3094.8, p90: 10796.6, ui: 14.9064, hasCash: true, hasGlide: true, isBuyer: true },
+  { rank: 9, name: "HOUSE_VEQT_VEQT_VBAL+CASH_VGRO", house: "HOUSE_VEQT", accum: "VEQT", bridge: "VBAL+CASH", post: "VGRO", buyAge: 33.4167, mortgage: 1899.45, ce: 3919.32, median: 5436.3, floor: 3146.7, p90: 10155.4, ui: 12.8036, hasCash: true, hasGlide: false, isBuyer: true },
+  { rank: 10, name: "HOUSE_VBAL_VEQT_VGRO+CASH_VEQT", house: "HOUSE_VBAL", accum: "VEQT", bridge: "VGRO+CASH", post: "VEQT", buyAge: 34, mortgage: 1941.76, ce: 3919.24, median: 5675.3, floor: 3096.1, p90: 10750.4, ui: 15.2964, hasCash: true, hasGlide: false, isBuyer: true },
+  { rank: 11, name: "HOUSE_VBAL_VEQT_VBAL+CASH_VEQT", house: "HOUSE_VBAL", accum: "VEQT", bridge: "VBAL+CASH", post: "VEQT", buyAge: 34, mortgage: 1941.76, ce: 3919.15, median: 5536.5, floor: 3127.6, p90: 10503.1, ui: 13.5445, hasCash: true, hasGlide: false, isBuyer: true },
+  { rank: 12, name: "HOUSE_VEQT_VEQT_VGRO+CASH_VGRO", house: "HOUSE_VEQT", accum: "VEQT", bridge: "VGRO+CASH", post: "VGRO", buyAge: 33.4167, mortgage: 1899.45, ce: 3916.07, median: 5624.5, floor: 3076.4, p90: 10600.6, ui: 14.5952, hasCash: true, hasGlide: false, isBuyer: true },
+  { rank: 13, name: "HOUSE_VGRO_VEQT_VBAL+CASH_DECLINING", house: "HOUSE_VGRO", accum: "VEQT", bridge: "VBAL+CASH", post: "DECLINING", buyAge: 33.8333, mortgage: 1929.43, ce: 3915.32, median: 5529.4, floor: 3108.2, p90: 10431.1, ui: 13.1355, hasCash: true, hasGlide: true, isBuyer: true },
 ];
 
 let activeStrategy = DATASET[0];

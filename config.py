@@ -126,10 +126,33 @@ class CMAConfig:
     )
     use_forward_looking_cmas: bool = True
     hisa_annual_real_return: float = -0.005
-    cash_wedge_years: float = 3.0
+    # +CASH tent size as a FRACTION OF THE RETIREMENT SPAN (pension start to
+    # death age), not a fixed year count: the wedge carved at retirement and
+    # topped up at the pension start equals w* x fraction x (retire months/12).
+    # Sweep-optimized post-bugfix across 10 varied +CASH allocations x fine
+    # grids x gamma 3/4/6 (engine.py, seed 42, 1,000 paths): CE peaks at 15%
+    # of the span and the P10 floor is within 0.4% of its maximum there; 7.5%
+    # (the old 3.0-year rule) is floor-optimal but -1.3% CE. 15% = 6 of the 40
+    # default retirement years.
+    cash_wedge_fraction: float = 0.15
     real_borrow_rate_annual: float = 0.0225
     extra_mer_15: float = 0.0020
     extra_mer_20: float = 0.0040
+    # DECLINING / RISING glidepath switch points as period fractions. ONE set
+    # applies to EVERY phase (accumulation, bridge, post-pension) that uses the
+    # glidepath: DECLINING = VEQT share a, VGRO share b, VBAL share 1-a-b;
+    # RISING = VBAL share a, VGRO share b, VEQT share 1-a-b. No single fund may
+    # exceed glidepath_max_share (enforced by the settings validation and the
+    # parameter-sweep grids). Sweep-optimized post-bugfix (10 varied
+    # allocations x 10%-step grids x gamma 3/4/6, engine.py, seed 42):
+    #   DECLINING (0.50, 0.20, 0.30) -- beats the old 0.50/0.25/0.25 by
+    #   +1.9-2.2% CE at every gamma with a slightly better P10 floor.
+    #   RISING (0.40, 0.50, 0.10) -- combined-rank winner; within noise of
+    #   (0.50, 0.50, 0.00) on CE but with +2.2% median spending. The old
+    #   0.25/0.25/0.50 loses ~2.5% CE to this.
+    glidepath_declining: Tuple[float, float, float] = (0.50, 0.20, 0.30)
+    glidepath_rising: Tuple[float, float, float] = (0.40, 0.50, 0.10)
+    glidepath_max_share: float = 0.50
 
 
 @dataclass(frozen=True)

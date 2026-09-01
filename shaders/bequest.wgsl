@@ -48,11 +48,14 @@ struct Params {
     solver: vec4<u32>,       // retirement months, underlying-fund count, bisection steps, first age-75 month
     calendar: vec4<u32>,     // first post-pension month, current age, career start age, retirement age
     constants0: vec4<f32>,   // distribution yield, distribution tax, HISA return, CG inclusion
-    constants1: vec4<f32>,   // CG tax rate, cash-wedge years, meltdown target, OAS threshold
+    constants1: vec4<f32>,   // CG tax rate, cash-wedge FRACTION of the retirement
+                             // span (wedge = w * fraction * retirement months),
+                             // meltdown target, OAS threshold
     constants2: vec4<f32>,   // OAS clawback rate, employer match rate, match percent, accumulation path count
     generate: vec4<u32>,     // PRNG seed, skew-t df, batch simulation count, batch offset
     generate1: vec4<f32>,    // real borrowing rate/12, extra MER 1.5/12, extra MER 2.0/12, layoff probability
-    dispatch: vec4<u32>,     // unused here; mirrors the main Params layout (144 bytes)
+    dispatch: vec4<u32>,     // unused here; mirrors the main Params layout (160 bytes)
+    glide: vec4<f32>,        // glidepath shares; mirrors the main Params layout
 };
 
 @group(0) @binding(0) var<storage, read> params: Params;
@@ -166,6 +169,9 @@ fn monthly_tax(gross: f32) -> f32 {
 }
 
 fn phase_fund(code: u32, month: u32, first_end: u32, second_end: u32) -> u32 {
+    // first_end/second_end come from the allocation metadata's glide boundary
+    // words (built from params.glide's configurable shares, mirrored in
+    // calibration._glidepath_boundaries and the JS glidepathBoundaries).
     if (code < 5u) {
         return code;
     }
@@ -224,7 +230,6 @@ fn interp_tax(target_net: f32, gross_offset: u32, net_offset: u32, count: u32) -
     return tax_at(gross_offset + last_index);
 }
 
-// Estate-grid tail: [grid count, f0, f1, ...] after the 11 house constants.
 fn estate_grid_offset() -> u32 {
     return career_years() * 6u + params.solver.x * 8u + 54u + 38u + 11u;
 }
@@ -264,11 +269,12 @@ fn terminal_estate(w: f32, simulation: u32, allocation: u32) -> f32 {
     var non_reg_acb = initial.w;
     var cash_wedge = 0.0;
 
-    // Bridge cash wedge: carve out cashWedgeYears of annual spending up
-    // front, prorated across the accounts by their current weights.
+    // Bridge cash wedge: carve out cashWedgeFraction of the RETIREMENT SPAN of
+    // annual spending up front, prorated across the accounts by their current
+    // weights (wedge = w * fraction * retirement YEARS = months / 12).
     if (bridge_cash) {
         let total = tfsa + rrsp + non_reg;
-        let actual_cash = min(total, w * params.constants1.y);
+        let actual_cash = min(total, w * params.constants1.y * f32(params.solver.x) / 12.0);
         let safe_total = max(total, 1e-10);
         let fraction = actual_cash / safe_total;
         tfsa -= tfsa * fraction;
@@ -307,7 +313,7 @@ fn terminal_estate(w: f32, simulation: u32, allocation: u32) -> f32 {
         // Post-pension cash wedge topped up at the end of the bridge phase.
         if (post_cash && !post_wedge_established && month == params.calendar.x) {
             let total = tfsa + rrsp + non_reg;
-            let needed = max(0.0, w * params.constants1.y - cash_wedge);
+            let needed = max(0.0, w * params.constants1.y * f32(params.solver.x) / 12.0 - cash_wedge);
             let actual_cash = min(total, needed);
             let safe_total = max(total, 1e-10);
             let fraction = actual_cash / safe_total;

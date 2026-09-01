@@ -143,14 +143,31 @@ def patch_template(rows: list) -> None:
         j = src.index("</div>", i)
         src = src[:i] + value_html + src[j:]
 
-    repl_kpi("kpi-ce", f'{money(top["ce"])}<span style="font-size:14px; font-weight:500; color:var(--text-muted)">/mo</span>')
-    repl_kpi("kpi-median", f'{money(top["median"])}<span style="font-size:14px; font-weight:500; color:var(--text-muted)">/mo</span>')
-    repl_kpi("kpi-floor", f'{money(top["floor"])}<span style="font-size:14px; font-weight:500; color:var(--text-muted)">/mo</span>')
-    repl_kpi("kpi-buy-age", "Age " + (f"{top['buyAge']:.1f}" if top["buyAge"] else "—"))
+    # Regex-based rewriters: each replaces the CURRENT value between the
+    # element's opening marker and its closing tag, so running the script
+    # twice is idempotent (no concatenated values) even when the new value
+    # itself contains the marker's trailing text.
+    def repl_between(marker: str, terminator: str, value_html: str):
+        nonlocal src
+        i = src.index(marker) + len(marker)
+        j = src.index(terminator, i)
+        src = src[:i] + value_html + src[j:]
+
+    repl_between(
+        'id="kpi-ce">', "</div>",
+        f'{money(top["ce"])}<span style="font-size:14px; font-weight:500; color:var(--text-muted)">/mo</span>',
+    )
+    repl_between(
+        'id="kpi-median">', "</div>",
+        f'{money(top["median"])}<span style="font-size:14px; font-weight:500; color:var(--text-muted)">/mo</span>',
+    )
+    repl_between(
+        'id="kpi-floor">', "</div>",
+        f'{money(top["floor"])}<span style="font-size:14px; font-weight:500; color:var(--text-muted)">/mo</span>',
+    )
+    repl_between('id="kpi-buy-age">', "</div>", "Age " + (f"{top['buyAge']:.1f}" if top["buyAge"] else "—"))
     if top["mortgage"]:
-        src = src.replace(
-            'id="kpi-mortgage">', f'id="kpi-mortgage">{money(top["mortgage"])}/mo', 1
-        )
+        repl_between('id="kpi-mortgage">', "</b>", f'{money(top["mortgage"])}/mo')
 
     TEMPLATE.write_text(src, encoding="utf-8", newline="\n")
 
