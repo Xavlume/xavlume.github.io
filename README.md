@@ -163,6 +163,15 @@ sampler variant (Threefry, Sobol shift, Owen, direct-χ²). The model buffer
 carries two 18-word skew-t sets plus the two transition probabilities
 (38 words in place of 18), so the bequest/estate offsets shift accordingly.
 
+The regime fit (HMM + per-state skew-t sets) is calibrated **at build time**
+and embedded in the page. The settings toggle ("Use expected returns above —
+off uses historical") and the CMA inputs still retarget the **drift** live in
+the browser: a common constant is added to both state means so the
+regime-weighted mean equals either the forward-looking CMA target
+(`log1p(CMA)/12 + cov/2`) or the historical sample mean — exactly the shift
+`calibration.calibrate_two_state_markov` applies. Regime persistence and
+per-state volatility are unaffected.
+
 ### Spending smile & intertemporal utility
 
 Retirement spending follows a life-stage "smile" schedule (flat → declining

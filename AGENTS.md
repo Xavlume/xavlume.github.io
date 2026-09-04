@@ -195,7 +195,7 @@ them breaks parity tests or the E2E suite.**
    The numerical formulas exist in three places that must stay identical:
    - Python: `calibration.py` (and `engine.py`)
    - JavaScript: `RUNTIME_JS` in `build_html.py` (`buildDynamicModel`,
-     `calibrateReturnModel`, `monthlyTax`, `pensionAmounts`, `ceForQuantiles`,
+     `applyCmaMeanShift`, `monthlyTax`, `pensionAmounts`, `ceForQuantiles`,
      `computeKappa`, …)
    - WGSL: `shaders/*.wgsl` (`monthly_tax`, `net_monthly`, `interp_tax`,
      `test_solvency`, `drawdown_ui`, …)
@@ -391,7 +391,11 @@ shift by 38 too). **Do not change the layout in only one of the three.**
   own skew-t set. State 0 = low-vol/bull, state 1 = high-vol/bear; VGRO/VBAL
   follow VEQT through a pooled Beta (state-invariant residual vol), and the
   two state means are shifted so the regime-weighted mean matches the base
-  CMA target (risk-structure change only, not drift). The sampler is
+  CMA target (risk-structure change only, not drift). The regime fit is
+  calibrated **at build time** (`calibrate_two_state_markov`) and embedded in
+  the payload; the browser re-applies only the CMA mean-shift live
+  (`applyCmaMeanShift` in `RUNTIME_JS` — the toggle + CMA inputs retarget the
+  drift; p00/p11/vol are build-time fixed). The sampler is
   synchronized across the NumPy CPU reference (`_returns_markov_cpu`), the
   WGSL pass (`returns.wgsl`) and the browser JS.
 - **Leverage**: `r1.5 = max(−0.95, 1.5·r − 0.5·r_borrow − fee1.5)`,

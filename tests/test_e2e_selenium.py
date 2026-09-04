@@ -508,9 +508,20 @@ def main() -> int:
         rm_off = driver.execute_script(
             "const r = state.dynamic.returnModel; return {p00: r.p00, s0xi0: r.states[0].xi[0]};"
         )
-        check("two-state return model is build-time fixed (unchanged by CMA toggle)",
-              abs(rm_off["s0xi0"] - rm_struct["s0xi0"]) == 0.0, f"state-0 xi0 {rm_struct['s0xi0']} -> {rm_off['s0xi0']}")
+        # The toggle retargets the stationary (regime-weighted) drift between
+        # the forward-looking CMA mean and the historical sample mean: xi must
+        # MOVE while p00/p11 (the regime fit) stay build-time fixed.
+        check("toggle OFF moves the drift to historical (xi shifts, p00 fixed)",
+              abs(rm_off["p00"] - rm_struct["p00"]) == 0.0 and abs(rm_off["s0xi0"] - rm_struct["s0xi0"]) > 1e-7,
+              f"p00 {rm_struct['p00']} -> {rm_off['p00']}, xi0 {rm_struct['s0xi0']} -> {rm_off['s0xi0']}")
         driver.execute_script("byId('inp-use-forward-cmas').checked = true;")
+        run_simulation(driver, args.simulations)
+        rm_back = driver.execute_script(
+            "const r = state.dynamic.returnModel; return {s0xi0: r.states[0].xi[0]};"
+        )
+        check("toggle ON restores the forward-looking drift (xi returns exactly)",
+              abs(rm_back["s0xi0"] - rm_struct["s0xi0"]) == 0.0,
+              f"xi0 {rm_struct['s0xi0']} -> {rm_back['s0xi0']}")
 
         section("SCHEMA INPUT BINDING (all settings tabs)")
         # Regression gate: every settings tab must feed readModelInputs.
@@ -530,7 +541,8 @@ def main() -> int:
         check("tab-tax field binds", binding["meltdown"] == 62000, str(binding["meltdown"]))
         check("tab-cma field binds", abs(binding["hisa"] + 0.01) < 1e-9, str(binding["hisa"]))
         check("tab-spend field binds", abs(binding["smile0"] - 0.01) < 1e-9, str(binding["smile0"]))
-        # End-to-end: an edited CMA must flow into the calibrated model.
+        # End-to-end: an edited CMA must retarget the model drift (the toggle
+        # is ON here, so the log1p(CMA) target feeds applyCmaMeanShift).
         driver.execute_script(
             "const s = schemaInputs();"
             "s['tab-cma:0'].value = '8.00';"
@@ -546,9 +558,9 @@ def main() -> int:
         xi_cma8 = driver.execute_script(
             "const r = state.dynamic.returnModel; return {p00: r.p00, s0xi0: r.states[0].xi[0]};"
         )
-        check("two-state return model stays build-time fixed after CMA edit",
-              abs(xi_cma8["s0xi0"] - rm_struct["s0xi0"]) == 0.0,
-              f"xi0 {rm_struct['s0xi0']} -> {xi_cma8['s0xi0']}")
+        check("CMA edit retargets the drift (xi moves, p00 fixed)",
+              abs(xi_cma8["p00"] - rm_struct["p00"]) == 0.0 and abs(xi_cma8["s0xi0"] - rm_struct["s0xi0"]) > 1e-7,
+              f"xi0 {rm_struct['s0xi0']} -> {xi_cma8['s0xi0']}, p00 {xi_cma8['p00']}")
         driver.execute_script("byId('btn-reset-defaults').click();")
 
         section("RQMC SAMPLER (default) + THREEFRY OPT-OUT")

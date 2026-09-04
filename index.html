@@ -1283,33 +1283,9 @@ function readModelInputs() {
 // ---------------------------------------------------------------------------
 // Fiscal & calibration helpers (exact ports of the engine's math).
 // ---------------------------------------------------------------------------
-function inverse3(matrix) {
-  const a = matrix[0], b = matrix[1], c = matrix[2], d = matrix[3], e = matrix[4], f = matrix[5], g = matrix[6], h = matrix[7], i = matrix[8];
-  const determinant = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
-  if (Math.abs(determinant) < 1e-12) throw new Error("Return calibration covariance is singular.");
-  return [
-    (e * i - f * h) / determinant, (c * h - b * i) / determinant, (b * f - c * e) / determinant,
-    (f * g - d * i) / determinant, (a * i - c * g) / determinant, (c * d - a * f) / determinant,
-    (d * h - e * g) / determinant, (b * g - a * h) / determinant, (a * e - b * d) / determinant
-  ];
-}
-
-function cholesky3(matrix) {
-  const output = new Array(9).fill(0);
-  for (let row = 0; row < 3; row++) {
-    for (let column = 0; column <= row; column++) {
-      let sum = matrix[row * 3 + column];
-      for (let k = 0; k < column; k++) sum -= output[row * 3 + k] * output[column * 3 + k];
-      if (row === column) {
-        if (sum <= 1e-12) throw new Error("Return calibration covariance is not positive definite.");
-        output[row * 3 + column] = Math.sqrt(sum);
-      } else {
-        output[row * 3 + column] = sum / output[column * 3 + column];
-      }
-    }
-  }
-  return output;
-}
+// (The single-regime runtime calibration — inverse3/cholesky3/calibrateReturnModel —
+// was retired with the two-state Markov model: the regime fit happens in
+// Python at build time; only the CMA mean-shift is recomputed live, below.)
 
 function exactLnGammaInteger(n) {
   let total = 0;
@@ -1334,51 +1310,39 @@ function exactBNu(nu) {
   return Math.sqrt(nu / Math.PI) * Math.exp(exactLogGamma((nu - 1) / 2) - exactLogGamma(nu / 2));
 }
 
-function calibrateReturnModel(config) {
+// Live CMA mean-shift for the two-state Markov return model.  The regime
+// fit (HMM + per-state skew-t sets) is calibrated in Python at build time and
+// embedded in the payload; the toggle and the CMA inputs change the DRIFT only,
+// exactly as in calibration.calibrate_two_state_markov: the stationary
+// (regime-weighted) mean of the embedded states is shifted by the common
+// constant that re-targets it on
+//   forward-looking: log1p(CMA)/12 + cov_ii/2   (moment-matched log-mean)
+//   historical:      the sample mean of the embedded price history
+// so only xi changes — omega/delta/Cholesky/p00/p11 stay build-time fixed.
+function applyCmaMeanShift(rm, config) {
   const values = MODEL.historicalReturns;
   const count = MODEL.historicalReturnCount;
+  const covariance = new Array(3).fill(0);
   const means = [0, 0, 0];
   for (let row = 0; row < count; row++) for (let column = 0; column < 3; column++) means[column] += values[row * 3 + column];
   for (let column = 0; column < 3; column++) means[column] /= count;
-  const covariance = new Array(9).fill(0);
-  for (let row = 0; row < count; row++) for (let first = 0; first < 3; first++) for (let second = 0; second < 3; second++) covariance[first * 3 + second] += (values[row * 3 + first] - means[first]) * (values[row * 3 + second] - means[second]);
-  for (let index = 0; index < 9; index++) covariance[index] /= count - 1;
-  const correlation = new Array(9).fill(0);
-  for (let first = 0; first < 3; first++) for (let second = 0; second < 3; second++) correlation[first * 3 + second] = covariance[first * 3 + second] / Math.sqrt(covariance[first * 3 + first] * covariance[second * 3 + second]);
-  const meanReturns = config.useForwardLookingCmas ? [
-    Math.log1p(config.cmas.VEQT) / 12 + 0.5 * covariance[0],
-    Math.log1p(config.cmas.VGRO) / 12 + 0.5 * covariance[4],
-    Math.log1p(config.cmas.VBAL) / 12 + 0.5 * covariance[8]
-  ] : means;
-  const nu = config.skewDegreesFreedom;
-  const bNu = exactBNu(nu);
-  const delta = [0, 1, 2].map(column => {
-    let second = 0, third = 0;
-    for (let row = 0; row < count; row++) {
-      const centered = values[row * 3 + column] - means[column];
-      second += centered * centered; third += centered * centered * centered;
-    }
-    second /= count; third /= count;
-    return config.deltaCap * Math.tanh((third / Math.pow(second, 1.5)) / 3);
-  });
-  const inverseCorrelation = inverse3(correlation);
-  let quadratic = 0;
-  for (let first = 0; first < 3; first++) for (let second = 0; second < 3; second++) quadratic += delta[first] * inverseCorrelation[first * 3 + second] * delta[second];
-  if (quadratic >= config.deltaTolerance) {
-    const factor = Math.sqrt(config.deltaTolerance / quadratic);
-    for (let index = 0; index < 3; index++) delta[index] *= factor;
+  for (let row = 0; row < count; row++) for (let column = 0; column < 3; column++) covariance[column] += (values[row * 3 + column] - means[column]) * (values[row * 3 + column] - means[column]);
+  for (let column = 0; column < 3; column++) covariance[column] /= count - 1;
+  const targetMean = config.useForwardLookingCmas
+    ? [Math.log1p(config.cmas.VEQT) / 12 + 0.5 * covariance[0],
+       Math.log1p(config.cmas.VGRO) / 12 + 0.5 * covariance[1],
+       Math.log1p(config.cmas.VBAL) / 12 + 0.5 * covariance[2]]
+    : means;
+  const prior0 = rm.prior0;
+  const s0 = rm.states[0], s1 = rm.states[1];
+  for (let column = 0; column < 3; column++) {
+    // xi = mu - omega*delta*b_nu  =>  mu = xi + omega*delta*b_nu.
+    const weightedMu = prior0 * (s0.xi[column] + s0.omega[column] * s0.delta[column] * exactBNu(MODEL.returnModel.nu))
+      + (1 - prior0) * (s1.xi[column] + s1.omega[column] * s1.delta[column] * exactBNu(MODEL.returnModel.nu));
+    const shift = targetMean[column] - weightedMu;
+    s0.xi[column] += shift; s1.xi[column] += shift;
   }
-  const omega = [0, 1, 2].map(index => Math.sqrt(covariance[index * 3 + index] / (nu / (nu - 2) - delta[index] * delta[index] * bNu * bNu)));
-  const calibratedCorrelation = new Array(9).fill(0);
-  for (let first = 0; first < 3; first++) for (let second = 0; second < 3; second++) calibratedCorrelation[first * 3 + second] = ((nu - 2) / nu) * (covariance[first * 3 + second] / (omega[first] * omega[second]) + bNu * bNu * delta[first] * delta[second]);
-  for (let index = 0; index < 3; index++) calibratedCorrelation[index * 3 + index] = 1;
-  const residual = calibratedCorrelation.map((value, index) => value - delta[Math.floor(index / 3)] * delta[index % 3]);
-  let cholesky;
-  for (const jitter of [0, 1e-10, 1e-8, 1e-6]) {
-    try { cholesky = cholesky3(residual.map((value, index) => value + (index % 4 === 0 ? jitter : 0))); break; } catch (_) { /* diagonal jitter */ }
-  }
-  if (!cholesky) throw new Error("Return calibration could not produce a positive-definite skew-t covariance.");
-  return {xi: meanReturns.map((value, index) => value - omega[index] * delta[index] * bNu), omega, correlation: calibratedCorrelation, delta, cholesky, nu};
+  return rm;
 }
 
 function monthlyTax(gross, config) {
@@ -1532,26 +1496,27 @@ function buildDynamicModel(config) {
     cpmWeights[month] = Math.pow(1 + config.discountRateAnnual / 12, -month) * survival; weightSum += cpmWeights[month];
   }
   for (let month = 0; month < constants.retireMonths; month++) cpmWeights[month] /= weightSum;
-  // Two-state Markov switching return model, calibrated in Python at build
-  // time and embedded in the payload (MODEL.returnModel). Append the 36-word
-  // two-state skew-t block (2 x [xi, omega, delta, row-major Cholesky]) plus
-  // the two transition probabilities p00/p11 after the tax tail, then the 11
-  // house constants (index 10 = target property value, read only by the
-  // bequest estate pass) and the bequest estate-grid tail [grid count,
-  // fractions...] (mirror of calibration.build_model_buffer / bequest.wgsl
-  // estate_grid_offset()). Deployed defaults are fixed at build time; the
-  // embedded parameters are used directly instead of re-fitting in the
-  // browser (the WGSL sampler is state-selected, see returns.wgsl).
+  // Two-state Markov switching return model: regime fit calibrated in Python
+  // at build time and embedded in the payload (MODEL.returnModel). Append the
+  // 36-word two-state skew-t block (2 x [xi, omega, delta, row-major
+  // Cholesky]) plus the two transition probabilities p00/p11 after the tax
+  // tail, then the 11 house constants (index 10 = target property value, read
+  // only by the bequest estate pass) and the bequest estate-grid tail [grid
+  // count, fractions...] (mirror of calibration.build_model_buffer /
+  // bequest.wgsl estate_grid_offset()). The CMA toggle + CMA inputs retarget
+  // the drift live via applyCmaMeanShift (a fresh copy each run — never
+  // mutate the embedded payload).
   const rm = MODEL.returnModel;
   const returnModel = {
     kind: rm.kind || "two-state-markov",
     nu: rm.nu, observations: rm.observations,
     p00: rm.p00, p11: rm.p11, prior0: rm.prior0,
     states: [
-      { xi: rm.states[0].xi, omega: rm.states[0].omega, delta: rm.states[0].delta, cholesky: rm.states[0].cholesky },
-      { xi: rm.states[1].xi, omega: rm.states[1].omega, delta: rm.states[1].delta, cholesky: rm.states[1].cholesky }
+      { xi: rm.states[0].xi.slice(), omega: rm.states[0].omega, delta: rm.states[0].delta, cholesky: rm.states[0].cholesky },
+      { xi: rm.states[1].xi.slice(), omega: rm.states[1].omega, delta: rm.states[1].delta, cholesky: rm.states[1].cholesky }
     ]
   };
+  applyCmaMeanShift(returnModel, config);
   const s0 = returnModel.states[0], s1 = returnModel.states[1];
   const returnModelArray = [].concat(s0.xi, s0.omega, s0.delta, s0.cholesky,
                                      s1.xi, s1.omega, s1.delta, s1.cholesky,
